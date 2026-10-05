@@ -1,0 +1,64 @@
+##
+# Copyright (c) 2026 Analog Devices, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+##
+
+name: Build
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - main
+
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 ## v6.0.1
+
+      - run: |
+          mkdir -p ~/bin
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR=~/bin sh -s 1.4.1
+          echo "$HOME/bin" >> $GITHUB_PATH
+      - run: arduino-cli version
+
+      - run: |
+          export ARDUINO_DIRECTORIES_DATA="$PWD/arduino-deps/data"
+          export ARDUINO_DIRECTORIES_USER="$PWD/arduino-deps/user"
+          arduino-cli core install arduino:renesas_uno@1.5.3
+          arduino-cli lib install \
+            "Adafruit SH110X@2.1.14" "Adafruit GFX Library@1.12.6" \
+            "Adafruit BusIO@1.17.4" "AD9833@0.4.5"
+          arduino-cli compile -b arduino:renesas_uno:unor4wifi --export-binaries ad-m2kcompedu-ebz-firmware.ino
+
+      - run: |
+          rm -rf arduino-deps/data/staging
+          rm -rf arduino-deps/data/tmp
+
+      - run: |
+          tar --exclude='./.*' \
+              --exclude='./build' \
+              -czf "$RUNNER_TEMP/firmware-sources.tar.gz" .
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f ## v7.0.0
+        with:
+          name: firmware-sources
+          path: ${{ runner.temp }}/firmware-sources.tar.gz
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f ## v7.0.0
+        with:
+          name: firmware-binaries
+          path: build/arduino.renesas_uno.unor4wifi/*
+          if-no-files-found: error

@@ -1,0 +1,5 @@
+# PlantUML sources
+*.puml
+
+# Build output
+build/

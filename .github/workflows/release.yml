@@ -1,0 +1,78 @@
+##
+# Copyright (c) 2026 Analog Devices, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+##
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 1.0.0-ga)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 ## v4.3.0
+        with:
+          path: ${{ runner.temp }}/dl
+
+      - run: |
+          mkdir -p "$RUNNER_TEMP/dist"
+          V="${{ inputs.version }}"
+          cp "$RUNNER_TEMP"/dl/firmware-binaries/*.bin "$RUNNER_TEMP/dist/ad-m2kcompedu-ebz-firmware-$V.bin"
+          cp "$RUNNER_TEMP"/dl/firmware-binaries/*.hex "$RUNNER_TEMP/dist/ad-m2kcompedu-ebz-firmware-$V.hex"
+          cp "$RUNNER_TEMP"/dl/firmware-binaries/*.elf "$RUNNER_TEMP/dist/ad-m2kcompedu-ebz-firmware-$V.elf"
+          cp "$RUNNER_TEMP"/dl/firmware-sources/firmware-sources.tar.gz \
+             "$RUNNER_TEMP/dist/ad-m2kcompedu-ebz-firmware-$V-sources.tar.gz"
+          ls -la "$RUNNER_TEMP/dist"
+
+      - run: |
+          V="${{ inputs.version }}"
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          Firmware for the Arduino UNO R4 WiFi (\`arduino:renesas_uno:unor4wifi\`).
+
+          ### Assets
+          - \`ad-m2kcompedu-ebz-firmware-$V.bin\` / \`.hex\` — flashable firmware images
+          - \`ad-m2kcompedu-ebz-firmware-$V.elf\` — image with debug symbols
+          - \`ad-m2kcompedu-ebz-firmware-$V-sources.tar.gz\` — full source + dependencies
+
+          ### Flash
+          \`\`\`
+          arduino-cli upload -b arduino:renesas_uno:unor4wifi -p <PORT> --input-file ad-m2kcompedu-ebz-firmware-$V.hex
+          \`\`\`
+          Replace \`<PORT>\` with your board's port (e.g. \`/dev/ttyACM0\` or \`COM3\`).
+
+          ### Rebuild
+          Rebuild on a native Linux or Ubuntu (WSL) machine.
+          \`\`\`
+          mkdir ad-m2kcompedu-ebz-firmware
+          tar xzf ad-m2kcompedu-ebz-firmware-$V-sources.tar.gz -C ad-m2kcompedu-ebz-firmware
+          cd ad-m2kcompedu-ebz-firmware
+          export ARDUINO_DIRECTORIES_DATA="\$PWD/arduino-deps/data"
+          export ARDUINO_DIRECTORIES_USER="\$PWD/arduino-deps/user"
+          arduino-cli compile -b arduino:renesas_uno:unor4wifi --export-binaries ad-m2kcompedu-ebz-firmware.ino
+          \`\`\`
+          EOF
+
+          gh release create "$V" \
+            "$RUNNER_TEMP"/dist/* \
+            --repo "${{ github.repository }}" \
+            --title "$V" \
+            --target "${{ github.sha }}" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

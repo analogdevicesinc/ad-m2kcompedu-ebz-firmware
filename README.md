@@ -234,3 +234,8 @@ Corrects sine amplitude gain at two reference points:
 ### Square Wave Amplitude Calibration
 
 Same procedure as sine calibration, but uses `SqwGain_VperLsb` and adjusts `LsbCal_SqWAmp1V` / `LsbCal_SqWAmp10V`.
+
+
+### Can and IIO support
+
+In implementation

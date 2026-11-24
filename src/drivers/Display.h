@@ -25,6 +25,7 @@ class Display
         Display(uint8_t i2c_address, uint16_t width, uint16_t height);
         void begin();
         void draw_text(const char text[]);
+        void popup(const char text[], uint16_t secs);
 
     private:
         Adafruit_SH1107 oled;

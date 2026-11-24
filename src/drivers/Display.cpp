@@ -59,8 +59,6 @@ void Display::draw_text(const char text[])
     bool striking = false;
     uint8_t st_start_x = 0;
 
-    // First pass for centering: need line length to compute offset
-    // We'll handle it inline by buffering per-line when centering is active
     for (uint8_t i = 0; text[i] != '\0'; i++) {
         char c = text[i];
 
@@ -132,5 +130,20 @@ void Display::draw_text(const char text[])
         oled.drawFastHLine(st_start_x, y + CHAR_HEIGHT / 2, x - st_start_x, SH110X_WHITE);
     }
 
+    oled.display();
+}
+
+void Display::popup(const char text[], uint16_t secs)
+{
+    const size_t bufSize = (size_t)width * height / 8;
+    uint8_t* fb = oled.getBuffer();
+    uint8_t saved[bufSize];
+    memcpy(saved, fb, bufSize);
+
+    draw_text(text);
+
+    delay((uint32_t)secs * 1000UL);
+
+    memcpy(fb, saved, bufSize);
     oled.display();
 }

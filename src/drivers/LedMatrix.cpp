@@ -93,8 +93,10 @@ void LedMatrix::begin()
 void LedMatrix::tick()
 {
     unsigned long now = millis();
-    unsigned long interval = (phase == Phase::Reveal) ? REVEAL_INTERVAL_MS
-                                                      : SCROLL_INTERVAL_MS;
+    unsigned long interval = SCROLL_INTERVAL_MS;
+    if (phase == Phase::Reveal) {
+        interval = REVEAL_INTERVAL_MS;
+    }
     if (now - lastStep < interval) {
         return;
     }
@@ -127,7 +129,11 @@ void LedMatrix::renderReveal(uint16_t f)
 
     for (uint8_t row = 0; row < ROWS; row++) {
         for (uint8_t col = 0; col < COLS; col++) {
-            canvas[row][col] = (row < f) ? AD_LOGO[row][col] : 1;
+            if (row < f) {
+                canvas[row][col] = AD_LOGO[row][col];
+            } else {
+                canvas[row][col] = 1;
+            }
         }
     }
 
@@ -140,8 +146,10 @@ void LedMatrix::renderScroll(uint16_t f)
 
     for (uint8_t col = 0; col < COLS; col++) {
         int16_t srcCol = (int16_t)f + col - COLS;
-        uint8_t bits = (srcCol >= 0 && srcCol < (int16_t)colCount)
-                           ? colBuf[srcCol] : 0x00;
+        uint8_t bits = 0x00;
+        if (srcCol >= 0 && srcCol < (int16_t)colCount) {
+            bits = colBuf[srcCol];
+        }
         for (uint8_t row = 0; row < ROWS; row++) {
             canvas[row][col] = (bits >> row) & 0x01;
         }

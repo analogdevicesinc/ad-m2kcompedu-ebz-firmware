@@ -8,71 +8,126 @@
  */
 
 #include "Peripherals.h"
-#include "Controler.h"
+#include <SPI.h>
 
 constexpr float SIN_GAIN_V_PER_LSB = 0.0053311;
 constexpr float SQW_GAIN_V_PER_LSB = 0.03889;
 constexpr float DC_OFF_V_PER_LSB   = 0.0031640;
 constexpr float CRYSTAL_FREQ       = 20000000.0;
 
+static void claimSpi()
+{
+    SPI.begin();
+}
+
+static void releaseSpi()
+{
+    SPI.end();
+}
+
 Peripherals::Peripherals(AD9833& waveformGen, AD5443& amplitudeCtrl,
                          AD5625R& dcOffsetCtrl, PwmOut& pwmOut,
-                         uint8_t sqwSwitchPin)
+                         uint8_t sqwSwitchPin, Messenger& messenger)
     : waveformGen(waveformGen),
       amplitudeCtrl(amplitudeCtrl),
       dcOffsetCtrl(dcOffsetCtrl),
       pwmOut(pwmOut),
       sqwSwitchPin(sqwSwitchPin),
-      pwmRunning(false)
+      pwmRunning(false),
+      messenger(messenger),
+      applied{},
+      lastOwner(SpiCanBusOwner::Can)
 {
 }
 
-void Peripherals::begin()
+void Peripherals::init()
+{
+    beginPwm();
+    dcOffsetCtrl.begin();
+
+    const AppState& state = messenger.state();
+
+    if (messenger.readSpiCanBusOwner() == SpiCanBusOwner::SignalGen)
+    {
+        beginSignalGen();
+        claimSpi();
+        updateFrequency(state);
+        updateWave(state);
+        updateAmplitude(state);
+        releaseSpi();
+    }
+
+    updateDcOffset(state);
+    applyPwm(state);
+
+    applied = state;
+    lastOwner = messenger.readSpiCanBusOwner();
+}
+
+void Peripherals::run()
+{
+    const AppState& state = messenger.state();
+    SpiCanBusOwner owner = messenger.readSpiCanBusOwner();
+
+    if (owner == SpiCanBusOwner::SignalGen)
+    {
+        bool regained = (lastOwner != SpiCanBusOwner::SignalGen);
+        if (regained)
+        {
+            beginSignalGen();
+        }
+
+        if (regained ||
+            state.waveform  != applied.waveform  || state.amplitude != applied.amplitude ||
+            state.freqOrder != applied.freqOrder || state.frequency != applied.frequency)
+        {
+            claimSpi();
+            updateFrequency(state);
+            updateWave(state);
+            updateAmplitude(state);
+            releaseSpi();
+
+            applied.waveform  = state.waveform;
+            applied.amplitude = state.amplitude;
+            applied.freqOrder = state.freqOrder;
+            applied.frequency = state.frequency;
+        }
+    }
+    lastOwner = owner;
+
+    if (state.dcOffset != applied.dcOffset)
+    {
+        updateDcOffset(state);
+        applied.dcOffset = state.dcOffset;
+    }
+
+    if (state.pwmEnabled   != applied.pwmEnabled   || state.pwmFreqOrder != applied.pwmFreqOrder ||
+        state.pwmFrequency != applied.pwmFrequency || state.dutyCycle    != applied.dutyCycle)
+    {
+        applyPwm(state);
+        applied.pwmEnabled   = state.pwmEnabled;
+        applied.pwmFreqOrder = state.pwmFreqOrder;
+        applied.pwmFrequency = state.pwmFrequency;
+        applied.dutyCycle    = state.dutyCycle;
+    }
+}
+
+void Peripherals::beginSignalGen()
 {
     pinMode(sqwSwitchPin, OUTPUT);
     digitalWrite(sqwSwitchPin, HIGH);
 
+    claimSpi();
     amplitudeCtrl.begin();
-    dcOffsetCtrl.begin();
-
     waveformGen.begin();
     waveformGen.setCrystalFrequency(CRYSTAL_FREQ);
-
-    pwmOut.begin(1000.0f, 50.0f);
-    pwmOut.suspend();
+    releaseSpi();
 }
 
-void Peripherals::update(const AppState& state, bool* refreshFlags)
+void Peripherals::beginPwm()
 {
-    bool waveChanged = refreshFlags[0];
-
-    if (refreshFlags[2] || refreshFlags[3] || waveChanged)
-    {
-        updateFrequency(state);
-        refreshFlags[2] = false;
-        refreshFlags[3] = false;
-    }
-    if (refreshFlags[0])
-    {
-        updateWave(state);
-        refreshFlags[0] = false;
-        refreshFlags[1] = true;
-    }
-    if (refreshFlags[1])
-    {
-        updateAmplitude(state);
-        refreshFlags[1] = false;
-    }
-    if (refreshFlags[4])
-    {
-        updateDcOffset(state);
-        refreshFlags[4] = false;
-    }
-    if (refreshFlags[5] || refreshFlags[6] || refreshFlags[7] || refreshFlags[8])
-    {
-        updatePwm(state);
-        refreshFlags[5] = refreshFlags[6] = refreshFlags[7] = refreshFlags[8] = false;
-    }
+    pwmOut.begin(1000.0f, 50.0f);
+    pwmOut.suspend();
 }
 
 void Peripherals::updateWave(const AppState& state)
@@ -98,7 +153,6 @@ void Peripherals::updateWave(const AppState& state)
     }
 
     waveformGen.setWave(mode);
-    waveformGen.setWave(mode);
 }
 
 void Peripherals::updateFrequency(const AppState& state)
@@ -122,16 +176,36 @@ void Peripherals::updateFrequency(const AppState& state)
 void Peripherals::updateAmplitude(const AppState& state)
 {
     float vpp = state.amplitude / 1000.0;
-    float gain = (state.waveform == 3) ? SQW_GAIN_V_PER_LSB : SIN_GAIN_V_PER_LSB;
+
+    float gain = SIN_GAIN_V_PER_LSB;
+    if (state.waveform == 3)
+    {
+        gain = SQW_GAIN_V_PER_LSB;
+    }
+
     int32_t lsb = (int32_t)round(vpp / gain);
 
     if (state.waveform == 3)
     {
-        lsb += (state.amplitude <= 1000) ? state.calSqw1V : state.calSqw10V;
+        if (state.amplitude <= 1000)
+        {
+            lsb += state.calSqw1V;
+        }
+        else
+        {
+            lsb += state.calSqw10V;
+        }
     }
     else
     {
-        lsb += (state.amplitude <= 1000) ? state.calSine1V : state.calSine10V;
+        if (state.amplitude <= 1000)
+        {
+            lsb += state.calSine1V;
+        }
+        else
+        {
+            lsb += state.calSine10V;
+        }
     }
 
     if (lsb < 0) { lsb = 0; }
@@ -162,7 +236,7 @@ void Peripherals::updateDcOffset(const AppState& state)
     dcOffsetCtrl.write(dacB, 1);
 }
 
-void Peripherals::updatePwm(const AppState& state)
+void Peripherals::applyPwm(const AppState& state)
 {
     if (state.pwmEnabled && !pwmRunning)
     {

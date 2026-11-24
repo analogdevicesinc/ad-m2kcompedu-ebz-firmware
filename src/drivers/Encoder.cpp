@@ -26,7 +26,6 @@ void Encoder::tick()
 {
     unsigned long now = millis();
 
-    // --- Rotation ---
     bool clk = digitalRead(pin_clk);
     if (clk != lastClk && clk == LOW) {
         if (now - lastRotation >= DEBOUNCE_MS) {
@@ -41,7 +40,6 @@ void Encoder::tick()
     }
     lastClk = clk;
 
-    // --- Button ---
     bool sw = digitalRead(pin_sw);
     if (sw == LOW && lastSw == HIGH) {
         swPressed = true;

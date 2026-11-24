@@ -13,4 +13,3 @@ profiles:
       - Adafruit SH110X (2.1.14)
       - Adafruit GFX Library (1.12.6)
       - Adafruit BusIO (1.17.4)
-      - AD9833 (0.4.5)

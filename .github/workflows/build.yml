@@ -39,7 +39,7 @@ jobs:
           arduino-cli core install arduino:renesas_uno@1.5.3
           arduino-cli lib install \
             "Adafruit SH110X@2.1.14" "Adafruit GFX Library@1.12.6" \
-            "Adafruit BusIO@1.17.4" "AD9833@0.4.5"
+            "Adafruit BusIO@1.17.4"
           arduino-cli compile -b arduino:renesas_uno:unor4wifi --export-binaries ad-m2kcompedu-ebz-firmware.ino
 
       - run: |

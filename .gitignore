@@ -3,3 +3,13 @@
 
 # Build output
 build/
+
+# VS Code IDE folder
+.vscode/
+
+
+# Python bytecode caches (any directory, any depth)
+__pycache__/
+*.py[cod]
+
+*.drawio

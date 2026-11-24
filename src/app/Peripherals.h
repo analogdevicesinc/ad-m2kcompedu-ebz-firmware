@@ -11,8 +11,8 @@
 #define PERIPHERALS_H
 
 #include <Arduino.h>
-#include <AD9833.h>
 #include "pwm.h"
+#include "../drivers/AD9833.h"
 #include "../drivers/AD5443.h"
 #include "../drivers/AD5625R.h"
 #include "Messenger.h"

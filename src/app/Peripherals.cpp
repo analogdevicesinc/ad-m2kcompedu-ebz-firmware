@@ -19,9 +19,6 @@ constexpr uint32_t ADC_PERIOD_MS   = 100;
 static void claimSpi()
 {
     SPI.begin();
-    SPI.beginTransaction(SPISettings(8000000, MSBFIRST, SPI_MODE2));
-    SPI.transfer16(0x0000);
-    SPI.endTransaction();
 }
 
 static void releaseSpi()
@@ -173,7 +170,6 @@ void Peripherals::updateWave(const AppState& state)
         digitalWrite(sqwSwitchPin, HIGH);
     }
 
-    waveformGen.setWave(mode);
     waveformGen.setWave(mode);
 }
 

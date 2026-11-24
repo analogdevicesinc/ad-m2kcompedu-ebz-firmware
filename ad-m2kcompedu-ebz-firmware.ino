@@ -6,7 +6,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <AD9833.h>
+#include "src/drivers/AD9833.h"
 #include "src/drivers/Display.h"
 #include "src/drivers/Encoder.h"
 #include "src/drivers/LedMatrix.h"

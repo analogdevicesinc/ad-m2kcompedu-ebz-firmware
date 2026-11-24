@@ -26,8 +26,10 @@ Usage:
 """
 
 import argparse
+import math
 import os
-import threading
+import random
+import sys
 import time
 import tkinter as tk
 from collections import deque
@@ -49,12 +51,21 @@ from audio import (
 )
 
 
-# COMMUTATION_MODE (0x2004) enum -- APP_SHADOW, resets to 0 every boot.
-SYSTEM_OFF = 0
-FOC_OPENLOOP_CURRENT = 4
+# The worker/backend logic lives in the motor_control/ and iio/ folders; the UI
+# stays here in the main window. Bootstrap sys.path with both so we can import
+# them by BARE module name. Deliberately NOT `import iio.siggen`: a package
+# named `iio` on sys.path would shadow the real libiio module that siggen.py
+# imports. libiio (a regular module in site-packages) still wins over the
+# demos/iio namespace-portion for `import iio`, so nothing is shadowed here.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _sub in ("motor_control", "iio"):
+    _p = os.path.join(_HERE, _sub)
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+import ffb        # noqa: E402  demos/motor_control/ffb.py -- FFB torque engine
+import siggen     # noqa: E402  demos/iio/siggen.py -- signal-gen / PWM worker
 
-# IIO signal-generator wave types (altvoltage0 "wavetype"), index == value.
-WAVE_NAMES = ["Off", "DC", "Sine", "Square", "Triangle"]
+WAVE_NAMES = siggen.WAVE_NAMES
 
 # Brand assets ship next to this script. adi_logo.png is the ADI blue logo
 # (wordmark, no tagline -- the variant the ADI logo guidelines prefer for
@@ -107,300 +118,173 @@ def int_flexible(x):
     return int(x, 0)
 
 
-class MotorWorker(threading.Thread):
-    """Owns the canopen network/node. Connects, arms open loop, then pushes the
-    latest target velocity and polls actual velocity until told to stop."""
+class Scene(tk.Canvas):
+    """Arcade 'behind the wheel' view: a scrolling perspective road with a car.
 
-    def __init__(self, node_id, port, eds, current):
-        super().__init__(daemon=True)
-        self._node_id = node_id
-        self._port = port
-        self._eds = eds
-        self._current = current
+    Pure eye-candy, but driven entirely by real telemetry -- it renders whatever
+    the shaft is actually doing. Steering angle bends the road ahead and slides
+    the car across it (leaning into the turn); the Bumpy-road amplitude shakes
+    the car and rattles the ride. The road always scrolls, so even idle it looks
+    like a cruise. The car is ADI blue in this panel."""
 
-        self._lock = threading.Lock()
-        self._target = 0
-        self._target_dirty = False
-        self._disarm_req = False
-        self._stop = threading.Event()
+    W, H = 440, 232
+    TS = (0.0, 0.18, 0.40, 0.68, 1.0)   # perspective samples, horizon(0)->near(1)
+    CRUISE = 0.85                        # road scroll speed (laps/second)
 
-        # Snapshot read by the UI thread (plain attribute stores are atomic in
-        # CPython, so the UI can read these without holding the lock).
-        self.status = "Connecting..."
-        self.connected = False
-        self.armed = False
-        self.actual = 0            # ACTUAL_VELOCITY
-        self.current_a = 0         # ACTUAL_TOTAL_MOTOR_CURRENT
-        self.uq = 0                # FOC_VOLTAGE_UQ (q-axis voltage, rises w/ speed)
-        self.cmd_vel = 0           # velocity currently commanded (for plotting)
+    def __init__(self, master):
+        super().__init__(master, width=self.W, height=self.H,
+                         bg="#6ec6f0", highlightthickness=0)   # sky
+        self.horizon = int(self.H * 0.34)
+        self._scroll = 0.0
 
-    def set_target(self, velocity):
-        with self._lock:
-            if velocity != self._target:
-                self._target = int(velocity)
-                self._target_dirty = True
+        # Static backdrop (drawn once, behind everything).
+        self.create_oval(self.W - 96, self.horizon - 58, self.W - 30,
+                         self.horizon + 8, fill="#fff2b8", outline="")   # sun
+        self.create_oval(-40, self.horizon - 34, 150, self.horizon + 30,
+                         fill="#3f9e51", outline="")                     # hill L
+        self.create_oval(self.W - 170, self.horizon - 26, self.W + 40,
+                         self.horizon + 30, fill="#3f9e51", outline="")  # hill R
+        self.create_rectangle(0, self.horizon, self.W, self.H,
+                              fill="#48a85a", outline="")                # grass
 
-    def disarm(self):
-        """STOP: zero the velocity and de-energize the motor (COMMUTATION off),
-        but stay connected. The next non-zero target re-arms automatically."""
-        with self._lock:
-            self._target = 0
-            self._disarm_req = True
+        # Dynamic road (repositioned every frame by coords()).
+        self._road = self.create_polygon(*([0] * (len(self.TS) * 4)),
+                                         fill="#3c424b", outline="")
+        self._seams = [self.create_line(0, 0, 0, 0, fill="#4a515a")
+                       for _ in range(7)]
+        self._edge_l = self.create_line(*([0] * (len(self.TS) * 2)),
+                                        fill="#eef2f4", width=3)
+        self._edge_r = self.create_line(*([0] * (len(self.TS) * 2)),
+                                        fill="#eef2f4", width=3)
+        self._dashes = [self.create_rectangle(0, 0, 0, 0, fill="#f5c542",
+                                              outline="") for _ in range(6)]
 
-    def request_stop(self):
-        self._stop.set()
+        # Car (rear view), built once and moved as a group by _place_car().
+        # Body is ADI blue; taillights stay red (correct for a rear view).
+        self._car = {
+            "shadow": self.create_oval(0, 0, 0, 0, fill="#2a2e34", outline=""),
+            "wl": self.create_rectangle(0, 0, 0, 0, fill="#16181c", outline=""),
+            "wr": self.create_rectangle(0, 0, 0, 0, fill="#16181c", outline=""),
+            "body": self.create_polygon(0, 0, 0, 0, 0, 0, 0, 0, fill="#2f6fd0",
+                                        outline="#1c4a8f"),
+            "bumper": self.create_rectangle(0, 0, 0, 0, fill="#3a3f45", outline=""),
+            "cabin": self.create_polygon(0, 0, 0, 0, 0, 0, 0, 0, fill="#2559a8",
+                                         outline=""),
+            "glass": self.create_polygon(0, 0, 0, 0, 0, 0, 0, 0, fill="#263038",
+                                         outline=""),
+            "tl": self.create_rectangle(0, 0, 0, 0, fill="#ff6b4a", outline=""),
+            "tr": self.create_rectangle(0, 0, 0, 0, fill="#ff6b4a", outline=""),
+        }
 
-    def _arm(self, node):
-        # FOC open-loop current commutation (see open_loop_spin.py). Must be
-        # redone every time: COMMUTATION_MODE is APP_SHADOW and drops to 0.
-        node.sdo["MOTOR_TYPE"].raw = 2            # stepper
-        node.sdo["MOTOR_POLE_PAIRS"].raw = 50
-        if self._current is not None:
-            node.sdo["OPENLOOP_CURRENT"].raw = self._current
-        node.sdo["DIRECT_VELOCITY_MODE"].raw = 1  # apply target directly, no ramp
-        node.sdo["COMMUTATION_MODE"].raw = FOC_OPENLOOP_CURRENT
-        self.armed = True
+    # -- perspective helpers: map (tt in 0..1 horizon->near, side) to screen ---
+    def _cx(self, tt, top_c, bot_c):
+        w = (1.0 - tt) ** 1.6            # curvature bunched toward the horizon
+        return bot_c + (top_c - bot_c) * w
 
-    def _disarm(self, node):
-        node.sdo["TARGET_VELOCITY"].raw = 0
-        time.sleep(0.3)
-        node.sdo["COMMUTATION_MODE"].raw = SYSTEM_OFF
-        self.armed = False
+    def _half(self, tt):
+        return 8.0 + 167.0 * tt          # road half-width, narrow far -> wide near
 
-    def run(self):
-        try:
-            import canopen
-        except Exception as exc:  # noqa: BLE001
-            self.status = f"canopen library missing: {exc}"
-            return
+    def _edge(self, tt, side, top_c, bot_c):
+        x = self._cx(tt, top_c, bot_c) + side * self._half(tt)
+        y = self.horizon + tt * (self.H - self.horizon)
+        return x, y
 
-        net = canopen.Network()
-        try:
-            net.connect(
-                interface="slcan",
-                channel=self._port,
-                bitrate=500000,
-                ttyBaudrate=921600,
-            )
-            node = net.add_node(self._node_id, self._eds)
-            node.nmt.wait_for_heartbeat()
-            node.nmt.state = "OPERATIONAL"
-            self._arm(node)
+    def _place_car(self, cx, cy, s):
+        lean = max(-10.0, min(10.0, s * 10.0))   # body roll into the turn
+        self.coords(self._car["shadow"], cx - 48, cy + 18, cx + 48, cy + 34)
+        self.coords(self._car["wl"], cx - 52, cy + 8, cx - 42, cy + 26)
+        self.coords(self._car["wr"], cx + 42, cy + 8, cx + 52, cy + 26)
+        self.coords(self._car["body"], cx - 38, cy - 6, cx + 38, cy - 6,
+                    cx + 46, cy + 22, cx - 46, cy + 22)
+        self.coords(self._car["bumper"], cx - 42, cy + 16, cx + 42, cy + 26)
+        self.coords(self._car["cabin"], cx - 30 + lean, cy - 30,
+                    cx + 30 + lean, cy - 30, cx + 34, cy - 6, cx - 34, cy - 6)
+        self.coords(self._car["glass"], cx - 24 + lean, cy - 27,
+                    cx + 24 + lean, cy - 27, cx + 26, cy - 10, cx - 26, cy - 10)
+        self.coords(self._car["tl"], cx - 44, cy + 2, cx - 30, cy + 13)
+        self.coords(self._car["tr"], cx + 30, cy + 2, cx + 44, cy + 13)
 
-            self.connected = True
-            self.status = "Armed"
-        except Exception as exc:  # noqa: BLE001 - surface any bring-up failure to the UI
-            self.status = f"Connect failed: {exc}"
-            try:
-                net.disconnect()
-            except Exception:
-                pass
-            return
+    def update_view(self, angle_deg, lock_deg, rumble, t, dt):
+        s = max(-1.0, min(1.0, angle_deg / max(1.0, lock_deg)))   # -1..+1 steer
+        top_c = self.W / 2 + s * 150.0          # far end swings hard with steer
+        bot_c = self.W / 2 + s * 22.5           # near end barely moves
 
-        try:
-            while not self._stop.is_set():
-                with self._lock:
-                    target = self._target
-                    dirty = self._target_dirty
-                    self._target_dirty = False
-                    disarm_req = self._disarm_req
-                    self._disarm_req = False
+        # Road surface + painted edges.
+        poly = []
+        for tt in self.TS:
+            poly += self._edge(tt, -1, top_c, bot_c)
+        for tt in reversed(self.TS):
+            poly += self._edge(tt, +1, top_c, bot_c)
+        self.coords(self._road, *poly)
+        left, right = [], []
+        for tt in self.TS:
+            left += self._edge(tt, -1, top_c, bot_c)
+            right += self._edge(tt, +1, top_c, bot_c)
+        self.coords(self._edge_l, *left)
+        self.coords(self._edge_r, *right)
 
-                try:
-                    if disarm_req:
-                        self._disarm(node)          # full stop + de-energize
-                        self.status = "Stopped (disarmed)"
-                    elif dirty:
-                        if target != 0 and not self.armed:
-                            self._arm(node)          # re-arm on demand
-                            self.status = "Armed"
-                        node.sdo["TARGET_VELOCITY"].raw = target
-                    self.cmd_vel = target
-                    # Fast telemetry every loop (feeds the charts).
-                    self.actual = node.sdo["ACTUAL_VELOCITY"].raw
-                    self.current_a = node.sdo["ACTUAL_TOTAL_MOTOR_CURRENT"].raw
-                    self.uq = node.sdo["FOC_VOLTAGE_UQ"].raw
-                except Exception as exc:  # noqa: BLE001
-                    self.status = f"Link error: {exc}"
+        # Scroll the seams and centre dashes toward the viewer (speed sensation).
+        self._scroll = (self._scroll + self.CRUISE * min(dt, 0.1)) % 1.0
+        n = len(self._seams)
+        for i, seam in enumerate(self._seams):
+            tt = (((i + self._scroll) / n)) ** 2      # bunch near the horizon
+            lx, ly = self._edge(tt, -1, top_c, bot_c)
+            rx, ry = self._edge(tt, +1, top_c, bot_c)
+            self.coords(seam, lx, ly, rx, ry)
+            self.itemconfigure(seam, width=max(1, int(1 + 3 * tt)))
+        m = len(self._dashes)
+        for i, dash in enumerate(self._dashes):
+            tt = (((i + self._scroll) / m)) ** 2
+            cxx = self._cx(tt, top_c, bot_c)
+            yy = self.horizon + tt * (self.H - self.horizon)
+            hw, hh = max(1.0, 3.0 * tt + 1.0), max(1.0, 11.0 * tt)
+            self.coords(dash, cxx - hw, yy - hh, cxx + hw, yy + hh)
 
-                time.sleep(0.12)
-        finally:
-            # Always stop and de-energize, whatever got us here.
-            try:
-                self._disarm(node)
-            except Exception:
-                pass
-            try:
-                net.disconnect()
-            except Exception:
-                pass
-            self.connected = False
-            self.status = "Disconnected"
-
-
-class IioWorker(threading.Thread):
-    """Owns the libiio context to the board's iiod server. Applies signal-gen /
-    PWM attribute changes, or replays the demos/iio wave sweep, until stopped.
-
-    Parameter keys (UI -> worker): wave, ampl, freq, off (altvoltage0) and
-    pwm_en, pwm_duty, pwm_freq (altvoltage1)."""
-
-    def __init__(self, port):
-        super().__init__(daemon=True)
-        self._port = port
-        self._lock = threading.Lock()
-        self._desired = {}       # key -> value, pending writes
-        self._dirty = False
-        self._sweep = False
-        self._stop = threading.Event()
-
-        self.status = "Connecting..."
-        self.connected = False
-        self.sweeping = False
-        self.applied = {}        # last-applied value per key (for read-out)
-
-    def set_param(self, key, value):
-        with self._lock:
-            self._desired[key] = value
-            self._dirty = True
-
-    def set_sweep(self, on):
-        with self._lock:
-            self._sweep = bool(on)
-
-    def request_stop(self):
-        self._stop.set()
-
-    @staticmethod
-    def _build_sweep_frames():
-        """Flatten the demos/iio/waves.py animation into (key, value, delay)
-        frames so it can be stepped one frame per loop and stopped instantly."""
-        frames = []
-
-        def add(key, val, delay=0.02):
-            frames.append((key, val, delay))
-
-        add("ampl", 1000); add("freq", 1000); add("off", 0)
-        add("pwm_freq", 1000); add("pwm_duty", 0); add("pwm_en", 1)
-        for wt in (2, 3, 4):                      # Sine, Square, Triangle
-            add("wave", wt, 0.1)
-            for duty in range(0, 101, 5):         # fade PWM in
-                add("pwm_duty", duty, 0.01)
-            for f in range(1000, 2550, 50):       # sweep frequency up
-                add("freq", f)
-            for f in range(2500, 950, -50):       # ...and down
-                add("freq", f)
-            for a in range(1000, 2550, 50):       # sweep amplitude up
-                add("ampl", a)
-            for a in range(2500, 950, -50):       # ...and down
-                add("ampl", a)
-            for o in range(0, 300, 50):           # sweep offset
-                add("off", o)
-            for duty in range(100, -1, -5):       # fade PWM out
-                add("pwm_duty", duty, 0.01)
-            for o in range(250, -300, -50):
-                add("off", o)
-            for o in range(-250, 50, 50):
-                add("off", o)
-            add("wave", wt, 0.5)                  # brief pause between waves
-        return frames
-
-    @staticmethod
-    def _apply(ch0, ch1, key, val):
-        if key == "wave":
-            ch0.attrs["wavetype"].value = str(int(val))
-        elif key == "ampl":
-            ch0.attrs["amplitude"].value = str(int(val))
-        elif key == "freq":
-            ch0.attrs["frequency"].value = str(float(val))
-        elif key == "off":
-            ch0.attrs["offset"].value = str(int(val))
-        elif key == "pwm_en":
-            ch1.attrs["enable"].value = str(int(val))
-        elif key == "pwm_duty":
-            ch1.attrs["duty_cycle"].value = str(int(val))
-        elif key == "pwm_freq":
-            ch1.attrs["frequency"].value = str(float(val))
-
-    def run(self):
-        try:
-            import iio
-        except Exception as exc:  # noqa: BLE001
-            self.status = f"iio library missing: {exc}"
-            return
-
-        uri = f"serial:{self._port},921600,8n1"
-        try:
-            ctx = iio.Context(uri)
-            dev = ctx.find_device("m2kcompedu-ebz")
-            if dev is None:
-                raise RuntimeError(
-                    "device 'm2kcompedu-ebz' not found -- is the board in "
-                    "SigGen mode (CAN jumper removed)?"
-                )
-            ch0 = dev.find_channel("altvoltage0", True)   # True = output
-            ch1 = dev.find_channel("altvoltage1", True)
-            if ch0 is None or ch1 is None:
-                raise RuntimeError("altvoltage0/1 output channels not found")
-            self.connected = True
-            self.status = "Connected"
-        except Exception as exc:  # noqa: BLE001
-            self.status = f"Connect failed: {exc}"
-            return
-
-        frames = self._build_sweep_frames()
-        idx = 0
-        try:
-            while not self._stop.is_set():
-                with self._lock:
-                    sweep = self._sweep
-                    pending = self._desired
-                    self._desired = {}
-                    dirty = self._dirty
-                    self._dirty = False
-                self.sweeping = sweep
-
-                try:
-                    if sweep:
-                        key, val, delay = frames[idx]
-                        self._apply(ch0, ch1, key, val)
-                        self.applied[key] = val
-                        idx = (idx + 1) % len(frames)
-                        self.status = "Running demo sweep"
-                        time.sleep(delay)
-                        continue
-                    if dirty:
-                        for k, v in pending.items():
-                            self._apply(ch0, ch1, k, v)
-                            self.applied[k] = v
-                        self.status = "Connected"
-                except Exception as exc:  # noqa: BLE001
-                    self.status = f"Link error: {exc}"
-
-                time.sleep(0.05)
-        finally:
-            # Leave the outputs quiet: wave off, PWM disabled.
-            try:
-                ch0.attrs["wavetype"].value = "0"
-                ch1.attrs["enable"].value = "0"
-            except Exception:
-                pass
-            try:
-                del ctx
-            except Exception:
-                pass
-            self.connected = False
-            self.status = "Disconnected"
+        # Car: slide toward the steer, jitter with the bumpy-road amplitude.
+        jx = jy = 0.0
+        if rumble > 0.0:
+            amp = min(11.0, rumble / 12.0)
+            jx, jy = random.uniform(-amp, amp), random.uniform(-amp, amp)
+        self._place_car(self.W / 2 + s * 70.0 + jx, self.H - 44 + jy, s)
 
 
-def fmt_vel(v):
-    """Compact signed velocity, e.g. -1.20 M, 850 k, 0."""
-    a = abs(v)
-    if a >= 1_000_000:
-        return f"{v / 1_000_000:+.2f} M"
-    if a >= 1_000:
-        return f"{v / 1_000:+.0f} k"
-    return f"{v:+d}"
+class Dial(tk.Canvas):
+    """A steering wheel that actually turns: a thick rim, three spokes rotating
+    with the shaft angle, and red markers at the +/- lock-to-lock limits. Sits on
+    a dark card (PANEL) beside the scene, matching the panel's dark plots."""
+
+    SIZE = 150
+
+    def __init__(self, master):
+        super().__init__(master, width=self.SIZE, height=self.SIZE,
+                         bg=PANEL, highlightthickness=0)
+        c = self.SIZE / 2
+        self._c = c
+        self._r = c - 12
+        self.create_oval(c - self._r, c - self._r, c + self._r, c + self._r,
+                         outline="#2b3240", width=13)          # tyre/grip
+        self.create_oval(c - self._r, c - self._r, c + self._r, c + self._r,
+                         outline="#3a4150", width=2)           # rim highlight
+        self._spokes = [self.create_line(c, c, c, c, fill="#5a6474", width=6,
+                                         capstyle="round") for _ in range(3)]
+        self._lo = self.create_line(c, c, c, c, fill="#c5221f", width=3)
+        self._hi = self.create_line(c, c, c, c, fill="#c5221f", width=3)
+        self._hub = self.create_oval(c - 13, c - 13, c + 13, c + 13,
+                                     fill="#4fc3f7", outline="")
+
+    def _point(self, deg, r):
+        # 0 deg = straight up; positive = clockwise, matching a wheel.
+        a = math.radians(deg - 90.0)
+        return self._c + r * math.cos(a), self._c + r * math.sin(a)
+
+    def update_view(self, angle_deg, lock_deg):
+        for i, spoke in enumerate(self._spokes):
+            self.coords(spoke, self._c, self._c,
+                        *self._point(angle_deg + i * 120.0, self._r - 6))
+        self.coords(self._lo, *self._point(-lock_deg, self._r * 0.66),
+                    *self._point(-lock_deg, self._r))
+        self.coords(self._hi, *self._point(lock_deg, self._r * 0.66),
+                    *self._point(lock_deg, self._r))
 
 
 def fmt_hz(v):
@@ -629,12 +513,15 @@ class StripChart:
 class App:
     def __init__(self, root, args):
         self.root = root
-        self.max_vel = args.max
         self.eds = args.eds
         self.default_port = args.iface
-        self.worker = None       # MotorWorker
-        self.iio = None          # IioWorker
+        self.node = args.node
+        self.cfg = ffb.Config()  # live FFB effect params (worker reads snapshots)
+        self.worker = None       # ffb.FfbWorker
+        self.iio = None          # siggen.IioWorker
         self.audio = None        # AudioWorker
+        self._t0 = time.perf_counter()
+        self._last_frame = self._t0
 
         root.title("AD-M2KCOMPEDU-EBZ Demo  by Analog Devices")
         root.configure(bg=BG, padx=18, pady=16)
@@ -663,11 +550,11 @@ class App:
         self.motor_tab = tk.Frame(nb, bg=BG)
         self.iio_tab = tk.Frame(nb, bg=BG)
         self.audio_tab = tk.Frame(nb, bg=BG)
-        nb.add(self.motor_tab, text="  Motor Drive · CAN  ")
+        nb.add(self.motor_tab, text="  Serial CAN Motor Control  ")
         nb.add(self.iio_tab, text="  Signal Generator · IIO  ")
         nb.add(self.audio_tab, text="  Audio Amplifier · ADC  ")
 
-        self._build_motor_tab(self.motor_tab, args)
+        self._build_ffb_tab(self.motor_tab, args)
         self._build_iio_tab(self.iio_tab)
         self._build_audio_tab(self.audio_tab)
 
@@ -676,13 +563,14 @@ class App:
         tk.Label(root, text="© 2026 Analog Devices, Inc. · AD-M2KCOMPEDU-EBZ evaluation demo",
                  bg=BG, fg=MUTED, font=("Segoe UI", 8)).pack(anchor="w")
 
-        self._set_controls(False)
+        self._set_ffb_controls(False)
         self.disc_btn.state(["disabled"])       # nothing to disconnect yet
         self._set_iio_controls(False)
         self.iio_disc_btn.state(["disabled"])
         self.aud_disc_btn.state(["disabled"])
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._refresh()
+        self._animate()
 
     # -- shared UI helpers ----------------------------------------------------
     def _card(self, parent, title=None):
@@ -708,8 +596,8 @@ class App:
                  wraplength=760, font=("Segoe UI", 8)).pack(
             side="left", padx=(0, 10), pady=8)
 
-    # -- motor tab ------------------------------------------------------------
-    def _build_motor_tab(self, tab, args):
+    # -- FFB steering-wheel tab ----------------------------------------------
+    def _build_ffb_tab(self, tab, args):
         self._banner(
             tab,
             "CAN mode required. Install the CAN jumper, reboot, then open "
@@ -717,8 +605,8 @@ class App:
             "In SigGen mode (jumper removed) this tab will not connect.",
         )
 
-        # Two columns: controls on the left, telemetry on the right, so the
-        # three charts sit beside the controls instead of running off-screen.
+        # Two columns: connection + effect controls on the left, the live
+        # driving view + steering wheel on the right.
         body = tk.Frame(tab, bg=BG)
         body.pack(fill="both", expand=True)
         left = tk.Frame(body, bg=BG)
@@ -729,8 +617,6 @@ class App:
         # === connection card ================================================
         self.node_var = tk.StringVar(value=hex(args.node))
         self.port_var = tk.StringVar(value=args.iface)
-        self.curr_var = tk.StringVar(value=str(args.current))
-        self.speed_var = tk.StringVar(value=str(args.max))
 
         conn = self._card(left, "Connection")
         form = tk.Frame(conn, bg=CARD)
@@ -749,76 +635,12 @@ class App:
             self.form_widgets.append(w)
             return w
 
-        ports = self._list_ports()
-
         field(0, 0, "Node ID", self.node_var, 8)
-        field(0, 1, "COM port", self.port_var, 10, values=ports)
-        field(1, 0, "Current [mA]", self.curr_var, 8)
-        field(1, 1, "Speed (slider ±)", self.speed_var, 10)
+        field(0, 1, "COM port", self.port_var, 10, values=self._list_ports())
 
-        conn_btns = tk.Frame(conn, bg=CARD)
-        conn_btns.pack(fill="x", pady=(6, 0))
-        self.conn_btn = ttk.Button(conn_btns, text="Connect", style="Accent.TButton",
-                                   command=self._connect)
-        self.conn_btn.pack(side="left", expand=True, fill="x", padx=(0, 3))
-        self.disc_btn = ttk.Button(conn_btns, text="Disconnect", style="Stop.TButton",
-                                   command=self._disconnect)
-        self.disc_btn.pack(side="left", expand=True, fill="x", padx=(3, 0))
-
-        # === drive card =====================================================
-        drive = self._card(left, "Drive")
-
-        self.dir_var = tk.StringVar(value="=")
-        self.big_var = tk.StringVar(value="0")
-        head = tk.Frame(drive, bg=CARD)
-        head.pack(fill="x")
-        self.dir_lbl = tk.Label(head, textvariable=self.dir_var, bg=CARD, fg=MUTED,
-                                font=("Segoe UI", 36, "bold"))
-        self.dir_lbl.pack(side="left", padx=(0, 14))
-        vcol = tk.Frame(head, bg=CARD)
-        vcol.pack(side="left")
-        tk.Label(vcol, text="TARGET VELOCITY", bg=CARD, fg=MUTED,
-                 font=("Segoe UI", 8)).pack(anchor="w")
-        self.big_lbl = tk.Label(vcol, textvariable=self.big_var, bg=CARD, fg=FG,
-                                font=("Segoe UI", 30, "bold"))
-        self.big_lbl.pack(anchor="w")
-
-        self.vel = tk.IntVar(value=0)
-        self.scale = tk.Scale(
-            drive, from_=-self.max_vel, to=self.max_vel, orient="horizontal",
-            length=440, resolution=max(1, self.max_vel // 200), showvalue=False,
-            variable=self.vel, command=self._on_slide,
-            bg=CARD, fg=FG, troughcolor=TROUGH, activebackground=ACCENT,
-            highlightthickness=0, bd=1, sliderrelief="raised",
-        )
-        self.scale.pack(fill="x", pady=(14, 2))
-
-        ends = tk.Frame(drive, bg=CARD)
-        ends.pack(fill="x")
-        self.end_lo = tk.Label(ends, text=f"◀ {fmt_vel(-self.max_vel)}", bg=CARD,
-                               fg=MUTED, font=("Segoe UI", 8))
-        self.end_hi = tk.Label(ends, text=f"{fmt_vel(self.max_vel)} ▶", bg=CARD,
-                               fg=MUTED, font=("Segoe UI", 8))
-        self.end_lo.pack(side="left")
-        self.end_hi.pack(side="right")
-
-        btns = tk.Frame(drive, bg=CARD)
-        btns.pack(fill="x", pady=(14, 0))
-        self.rev_btn = ttk.Button(btns, text="◀ REVERSE", style="Rev.TButton",
-                                  command=lambda: self._jam(-self.max_vel))
-        self.stop_btn = ttk.Button(btns, text="■ STOP", style="Stop.TButton",
-                                   command=self._stop_motor)
-        self.fwd_btn = ttk.Button(btns, text="FORWARD ▶", style="Fwd.TButton",
-                                  command=lambda: self._jam(self.max_vel))
-        self.rev_btn.pack(side="left", expand=True, fill="x", padx=(0, 3))
-        self.stop_btn.pack(side="left", expand=True, fill="x", padx=3)
-        self.fwd_btn.pack(side="left", expand=True, fill="x", padx=(3, 0))
-
-        # === telemetry card =================================================
-        tele = self._card(right, "Telemetry")
-
-        stat_row = tk.Frame(tele, bg=CARD)
-        stat_row.pack(fill="x", pady=(0, 4))
+        # Status dot + text, shared with _refresh / _status_color.
+        stat_row = tk.Frame(conn, bg=CARD)
+        stat_row.pack(fill="x", pady=(2, 8))
         self.status_dot = tk.Label(stat_row, text="●", bg=CARD, fg=MUTED,
                                    font=("Segoe UI", 10))
         self.status_dot.pack(side="left", padx=(0, 6))
@@ -826,41 +648,79 @@ class App:
         tk.Label(stat_row, textvariable=self.status_var, bg=CARD, fg=FG,
                  font=("Segoe UI", 9)).pack(side="left")
 
-        # Live numeric read-outs pulled straight from the drive.
-        grid = tk.Frame(tele, bg=CARD)
-        grid.pack(fill="x", pady=(8, 4))
-        for c in range(3):
-            grid.columnconfigure(c, weight=1, uniform="stat")
+        conn_btns = tk.Frame(conn, bg=CARD)
+        conn_btns.pack(fill="x", pady=(6, 0))
+        self.conn_btn = ttk.Button(conn_btns, text="Connect", style="Accent.TButton",
+                                   command=self._ffb_connect)
+        self.conn_btn.pack(side="left", expand=True, fill="x", padx=(0, 3))
+        self.disc_btn = ttk.Button(conn_btns, text="Disconnect", style="Stop.TButton",
+                                   command=self._ffb_disconnect)
+        self.disc_btn.pack(side="left", expand=True, fill="x", padx=(3, 0))
+
+        # === effects card ===================================================
+        # Each slider edits one ffb.Config field live; the worker reads a
+        # snapshot every tick. Sliders stay enabled even while disconnected so
+        # the feel can be dialled in before arming.
+        fx = self._card(left, "Force-feedback effects")
+        specs = [
+            ("spring",    "Spring (centering)",    0, 20, 0.5),
+            ("damping",   "Damping",               0, 2, 0.05),
+            ("lock_deg",  "Lock-to-lock  ± deg",   90, 900, 10),
+            ("endstop",   "End-stop wall",         0, 120, 5),
+            ("rumble",    "Bumpy road",            0, 150, 5),
+            ("rumble_hz", "Road frequency [Hz]",   3, 30, 1),
+            ("max_force", "Max force (clamp)",     50, ffb.TORQUE_HARD_CLAMP, 10),
+        ]
+        for key, label, lo, hi, res in specs:
+            var = tk.DoubleVar(value=getattr(self.cfg, key))
+            self._slider(fx, label, "", lo, hi, var,
+                         lambda v, k=key: self.cfg.set(**{k: float(v)}), res=res)
+
+        fx_btns = tk.Frame(fx, bg=CARD)
+        fx_btns.pack(fill="x", pady=(6, 0))
+        self.recenter_btn = ttk.Button(fx_btns, text="Recenter", style="Accent.TButton",
+                                       command=self._recenter)
+        self.stop_btn = ttk.Button(fx_btns, text="■ STOP (de-energize)",
+                                   style="Stop.TButton", command=self._ffb_stop)
+        self.recenter_btn.pack(side="left", expand=True, fill="x", padx=(0, 3))
+        self.stop_btn.pack(side="left", expand=True, fill="x", padx=(3, 0))
+
+        # === driving view (right) ===========================================
+        view = self._card(right, "Drive view")
+        self.scene = Scene(view)
+        self.scene.pack()
+
+        # === steering wheel + readouts ======================================
+        steer = self._card(right, "Steering")
+        wheel_row = tk.Frame(steer, bg=CARD)
+        wheel_row.pack(fill="x")
+        dial_wrap = tk.Frame(wheel_row, bg=PANEL, highlightbackground=BORDER,
+                             highlightthickness=1, bd=0)
+        dial_wrap.pack(side="left")
+        self.dial = Dial(dial_wrap)
+        self.dial.pack(padx=6, pady=6)
+
+        read = tk.Frame(wheel_row, bg=CARD)
+        read.pack(side="left", padx=(16, 0), anchor="n")
         self.stat_vars = {}
 
-        def stat(idx, key, label):
-            cell = tk.Frame(grid, bg=CARD)
-            cell.grid(row=idx // 3, column=idx % 3, sticky="w", pady=(0, 8))
-            tk.Label(cell, text=label.upper(), bg=CARD, fg=MUTED,
+        def stat(key, label, font):
+            tk.Label(read, text=label.upper(), bg=CARD, fg=MUTED,
                      font=("Segoe UI", 7)).pack(anchor="w")
             var = tk.StringVar(value="--")
             self.stat_vars[key] = var
-            tk.Label(cell, textvariable=var, bg=CARD, fg=FG,
-                     font=("Consolas", 12, "bold")).pack(anchor="w")
+            tk.Label(read, textvariable=var, bg=CARD, fg=FG,
+                     font=font).pack(anchor="w", pady=(0, 6))
 
-        stat(0, "target", "Target vel")
-        stat(1, "actual", "Actual vel")
-        stat(2, "current", "Current")
-        stat(3, "uq", "FOC UQ")
+        stat("angle", "Angle", ("Segoe UI", 22, "bold"))
+        stat("torque", "Torque", ("Segoe UI", 14))
+        stat("loop", "Loop rate", ("Consolas", 10))
+        stat("raw", "Raw (cal)", ("Consolas", 10))
 
-        self.vchart = StripChart(
-            tele, "Velocity",
-            [("target", T_TGT, True), ("actual", T_VEL, False)],
-            fmt=fmt_vel, width=440, height=120, symmetric=True,
-        )
-        self.ichart = StripChart(
-            tele, "Motor current",
-            [("actual", T_CUR, False)],
-            fmt=lambda v: f"{v:+d} mA", width=440, height=90,
-        )
-        self.uqchart = StripChart(
-            tele, "FOC q-axis voltage (UQ)",
-            [("UQ", T_UQ, False)],
+        # Torque history strip (reuses the panel's scope-style StripChart).
+        self.tchart = StripChart(
+            steer, "Commanded torque",
+            [("torque", T_UQ, False)],
             fmt=lambda v: f"{v:+d}", width=440, height=90, symmetric=True,
         )
 
@@ -1185,7 +1045,7 @@ class App:
     def _aud_connect(self):
         if self.audio and self.audio.is_alive():
             return
-        self._stop_motor_worker()
+        self._stop_ffb_worker()
         self._stop_iio()
         port = self.aud_port_var.get().strip()
         if not port:
@@ -1221,12 +1081,19 @@ class App:
         head.pack(fill="x")
         tk.Label(head, text=label, bg=CARD, fg=MUTED,
                  font=("Segoe UI", 8)).pack(side="left")
-        valvar = tk.StringVar(value=f"{var.get()} {unit}")
+        suffix = f" {unit}" if unit else ""
+
+        def _fmt(v):
+            # %g keeps fractional resolutions (0.5, 0.05) legible while showing
+            # whole numbers without a trailing ".0".
+            return f"{float(v):g}{suffix}"
+
+        valvar = tk.StringVar(value=_fmt(var.get()))
         tk.Label(head, textvariable=valvar, bg=CARD, fg=FG,
                  font=("Consolas", 9)).pack(side="right")
 
         def on_move(v):
-            valvar.set(f"{int(float(v))} {unit}")
+            valvar.set(_fmt(v))
             cmd(v)
 
         s = tk.Scale(wrap, from_=lo, to=hi, orient="horizontal", length=300,
@@ -1326,49 +1193,16 @@ class App:
             ports = [p.device for p in list_ports.comports()]
         return ports
 
-    # -- motor control helpers ------------------------------------------------
-    def _set_controls(self, armed):
-        # Drive controls live only while armed; the connection form is editable
-        # only while disconnected.
-        for w in (self.rev_btn, self.stop_btn, self.fwd_btn):
+    # -- FFB steering-wheel helpers -------------------------------------------
+    def _set_ffb_controls(self, armed):
+        # Recenter/STOP live only while armed; the connection form is editable
+        # only while disconnected. Effect sliders stay enabled either way.
+        for w in (self.recenter_btn, self.stop_btn):
             w.state(["!disabled" if armed else "disabled"])
-        self.scale.configure(state=("normal" if armed else "disabled"))
         for w in self.form_widgets:
             w.state(["disabled" if armed else "!disabled"])
 
-    def _apply_range(self, max_vel):
-        self.max_vel = max_vel
-        self.scale.configure(
-            from_=-max_vel, to=max_vel, resolution=max(1, max_vel // 200)
-        )
-        self.vel.set(0)
-        self.end_lo.configure(text=f"◀ {fmt_vel(-max_vel)}")
-        self.end_hi.configure(text=f"{fmt_vel(max_vel)} ▶")
-        self._on_slide(None)
-
-    def _on_slide(self, _val):
-        v = self.vel.get()
-        self.big_var.set(fmt_vel(v))
-        self.dir_var.set("▶" if v > 0 else "◀" if v < 0 else "=")
-        color = GREEN if v > 0 else RED if v < 0 else MUTED
-        self.dir_lbl.configure(fg=color)
-        self.big_lbl.configure(fg=(FG if v == 0 else color))
-        if self.worker and self.worker.connected:
-            self.worker.set_target(v)
-
-    def _jam(self, v):
-        self.vel.set(v)
-        self._on_slide(None)
-
-    def _stop_motor(self):
-        # Full stop like open_loop_spin.py: zero velocity + de-energize. Stays
-        # connected; moving the slider off zero re-arms the drive.
-        self.vel.set(0)
-        self._on_slide(None)
-        if self.worker and self.worker.connected:
-            self.worker.disarm()
-
-    def _connect(self):
+    def _ffb_connect(self):
         if self.worker and self.worker.is_alive():
             return
         # Only one mode can own the port -- drop any other session first.
@@ -1378,39 +1212,42 @@ class App:
         try:
             node = int_flexible(self.node_var.get().strip())
             port = self.port_var.get().strip()
-            current = int(self.curr_var.get().strip())
-            speed = int(self.speed_var.get().strip())
-            if not port or speed <= 0:
-                raise ValueError("port empty or speed <= 0")
+            if not port:
+                raise ValueError("port empty")
         except (ValueError, TypeError) as exc:
             self.status_var.set(f"Bad input: {exc}")
             return
 
-        self._apply_range(speed)
-        self.vchart.clear()
-        self.ichart.clear()
-        self.uqchart.clear()
+        self.tchart.clear()
         self.conn_btn.state(["disabled"])
         self.disc_btn.state(["!disabled"])
         self.status_var.set("Connecting...")
-        self.worker = MotorWorker(node, port, self.eds, current)
+        self.worker = ffb.FfbWorker(node, port, self.eds, self.cfg)
         self.worker.start()
 
-    def _disconnect(self):
-        # Stop + de-energize the motor and release the port. The worker's
-        # finally-block disarms; _stop_motor_worker waits for it to finish.
+    def _ffb_disconnect(self):
+        # De-energize the drive and release the port. The worker's finally-block
+        # disarms; _stop_ffb_worker waits for it to finish.
         if not (self.worker and self.worker.is_alive()):
             return
-        self.vel.set(0)
-        self._on_slide(None)
         self.disc_btn.state(["disabled"])
         self.status_var.set("Disconnecting...")
         self.root.update_idletasks()
-        self._stop_motor_worker()
+        self._stop_ffb_worker()
         self.status_var.set("Disconnected")
-        self._set_controls(False)
+        self._set_ffb_controls(False)
         self.conn_btn.state(["!disabled"])
         self.conn_btn.configure(text="Connect")
+
+    def _recenter(self):
+        # Zero the steering angle at the current shaft position.
+        if self.worker and self.worker.connected:
+            self.worker.recenter()
+
+    def _ffb_stop(self):
+        # Emergency de-energize: drop the FFB link entirely (worker disarms in
+        # its finally-block). Reconnect to arm again.
+        self._ffb_disconnect()
 
     # -- IIO control helpers --------------------------------------------------
     def _set_iio_controls(self, connected):
@@ -1443,7 +1280,7 @@ class App:
         if self.iio and self.iio.is_alive():
             return
         # Only one mode can own the port -- drop any other session first.
-        self._stop_motor_worker()
+        self._stop_ffb_worker()
         self._stop_audio()
         port = self.iio_port_var.get().strip()
         if not port:
@@ -1452,7 +1289,7 @@ class App:
         self.iio_conn_btn.state(["disabled"])
         self.iio_disc_btn.state(["!disabled"])
         self.iio_status_var.set("Connecting...")
-        self.iio = IioWorker(port)
+        self.iio = siggen.IioWorker(port)
         self.iio.start()
 
     def _iio_disconnect(self):
@@ -1518,7 +1355,7 @@ class App:
             self._push_all_iio()      # restore the manual settings
 
     # -- teardown helpers -----------------------------------------------------
-    def _stop_motor_worker(self):
+    def _stop_ffb_worker(self):
         if self.worker and self.worker.is_alive():
             self.worker.request_stop()
             self.worker.join(timeout=3.0)
@@ -1541,32 +1378,28 @@ class App:
         return busy_ok
 
     def _refresh(self):
-        # --- motor tab ---
+        # --- Serial CAN motor control (FFB) tab ---
         w = self.worker
         if w:
-            self.status_var.set(w.status)
-            self.status_dot.configure(
-                fg=self._status_color(w.connected, GREEN if w.armed else ACCENT, w.status))
-            armed = w.connected
-            self._set_controls(armed)
-            if w.connected:
-                # Sample the worker's latest telemetry into the charts + grid.
-                self.vchart.push((w.cmd_vel, w.actual))
-                self.ichart.push((w.current_a,))
-                self.uqchart.push((w.uq,))
-                self.stat_vars["target"].set(fmt_vel(w.cmd_vel))
-                self.stat_vars["actual"].set(fmt_vel(w.actual))
-                self.stat_vars["current"].set(f"{w.current_a:+d} mA")
-                self.stat_vars["uq"].set(f"{w.uq:+d}")
+            # A tripped runaway cutout is the one transient worth hoisting over
+            # the steady "Armed" line, so the user can see why the wheel went
+            # limp (torque suppressed while it coasts down); amber, not red --
+            # it's self-recovering, not a fault.
+            if getattr(w, "runaway", False):
+                self.status_var.set("Runaway cutout -- coasting (lower spring)")
+                self.status_dot.configure(fg=AMBER)
             else:
-                for var in self.stat_vars.values():
-                    var.set("--")
+                self.status_var.set(w.status)
+                self.status_dot.configure(
+                    fg=self._status_color(w.connected, GREEN if w.armed else ACCENT, w.status))
+            self._set_ffb_controls(w.connected)
+            if w.connected:
+                # Sample the worker's latest telemetry into the torque strip.
+                self.tchart.push((w.torque,))
             if w.is_alive():
                 # Connected or still connecting: connect locked, disconnect live.
                 self.conn_btn.state(["disabled"])
                 self.disc_btn.state(["!disabled"])
-                if w.armed:
-                    self.worker.set_target(self.vel.get())
             else:
                 # Worker thread has ended (link dropped or connect failed).
                 self.conn_btn.state(["!disabled"])
@@ -1658,6 +1491,33 @@ class App:
 
         self.root.after(150, self._refresh)
 
+    def _animate(self):
+        # ~33 Hz redraw of the driving Scene + steering Dial, decoupled from the
+        # 150 ms status _refresh so the road scrolls smoothly. Reads the worker's
+        # latest telemetry; idle-cruises at 0 deg (no jitter) when not armed.
+        now = time.perf_counter()
+        dt = now - self._last_frame
+        self._last_frame = now
+
+        snap = self.cfg.snapshot()
+        lock_deg, rumble = snap[2], snap[4]
+
+        w = self.worker
+        if w and w.connected:
+            angle = w.angle_deg
+            self.stat_vars["angle"].set(f"{angle:+.1f}\N{DEGREE SIGN}")
+            self.stat_vars["torque"].set(f"{w.torque:+d}")
+            self.stat_vars["loop"].set(f"{w.loop_hz:.1f} Hz")
+            self.stat_vars["raw"].set(f"{w.raw}")
+        else:
+            angle, rumble = 0.0, 0.0   # no bumpy-road jitter until armed
+            for var in self.stat_vars.values():
+                var.set("--")
+
+        self.scene.update_view(angle, lock_deg, rumble, now - self._t0, dt)
+        self.dial.update_view(angle, lock_deg)
+        self.root.after(30, self._animate)
+
     def _on_close(self):
         busy = ((self.worker and self.worker.is_alive()) or
                 (self.iio and self.iio.is_alive()) or
@@ -1667,7 +1527,7 @@ class App:
             self.iio_status_var.set("Stopping...")
             self.aud_status_var.set("Stopping...")
             self.root.update_idletasks()
-        self._stop_motor_worker()
+        self._stop_ffb_worker()
         self._stop_iio()
         self._stop_audio()
         self.root.destroy()
@@ -1678,9 +1538,6 @@ def main():
     p.add_argument("node", type=int_flexible, nargs="?", default=0x16, help="Target node ID (motor)")
     p.add_argument("-i", "--iface", default="COM4", help="slcan / IIO serial COM port")
     p.add_argument("-e", "--eds", default=DEFAULT_EDS, help="EDS file (motor)")
-    p.add_argument("--max", type=int, default=1_000_000, help="Slider range (+/-)")
-    p.add_argument("--current", type=int, default=1000,
-                   help="Open-loop current [mA]")
     args = p.parse_args()
 
     root = tk.Tk()

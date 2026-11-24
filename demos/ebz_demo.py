@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+#
+# ebz_demo.py
+#
+# Copyright (c) 2026 Analog Devices, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
 
 import argparse
 import math

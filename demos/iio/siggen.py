@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+#
+# siggen.py
+#
+# Copyright (c) 2026 Analog Devices, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
 
 import threading
 import time

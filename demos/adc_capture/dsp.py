@@ -1,4 +1,3 @@
-"""Audio DSP helpers — Python ports of biquad filter and FFT routines."""
 
 import cmath
 import math
@@ -10,7 +9,6 @@ FILTER_TYPES = [
 
 
 def biquad_coeffs(filter_type, fc, q, sample_rate, gain_db=0.0):
-    """Return (b0, b1, b2, a1, a2) for the given biquad type."""
     w0 = 2.0 * math.pi * fc / sample_rate
     cosw0 = math.cos(w0)
     sinw0 = math.sin(w0)
@@ -81,7 +79,6 @@ def biquad_coeffs(filter_type, fc, q, sample_rate, gain_db=0.0):
 
 
 def apply_biquad(samples, b0, b1, b2, a1, a2, state=None):
-    """Direct Form II Transposed. Returns (output_list, (z1, z2))."""
     z1, z2 = state if state else (0.0, 0.0)
     out = []
     for x in samples:
@@ -93,7 +90,6 @@ def apply_biquad(samples, b0, b1, b2, a1, a2, state=None):
 
 
 def _fft_radix2(x):
-    """Cooley-Tukey radix-2 DIT FFT. len(x) must be a power of 2."""
     n = len(x)
     if n == 1:
         return x
@@ -108,7 +104,6 @@ def _fft_radix2(x):
 
 
 def compute_fft_db(samples, sample_rate):
-    """Return (freqs, magnitudes_dB) for the one-sided spectrum."""
     n = len(samples)
     nfft = 1
     while nfft < n:

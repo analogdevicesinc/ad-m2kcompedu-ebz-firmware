@@ -13,6 +13,7 @@
 
 #include "../drivers/Encoder.h"
 #include "../drivers/Display.h"
+#include "../drivers/LedMatrix.h"
 #include "Messenger.h"
 #include "BusArbiter.h"
 #include "Menu.h"
@@ -20,7 +21,7 @@
 #include "Peripherals.h"
 #include "CanMessenger.h"
 #include "IioAttrServer.h"
-#include "Audio.h"
+#include "AdcCapture.h"
 
 class Controller
 {
@@ -29,7 +30,7 @@ class Controller
                    AD9833& waveformGen, AD5443& amplitudeCtrl,
                    AD5625R& dcOffsetCtrl, PwmOut& pwmOut,
                    uint8_t sqwSwitchPin, uint8_t canRxPin,
-                   uint8_t audioPreAmpPin, uint8_t audioPostAmpPin);
+                   uint8_t adcPreAmpPin, uint8_t adcPostAmpPin);
         void init();
         void tick();
 
@@ -41,7 +42,8 @@ class Controller
         Peripherals       peripherals;
         CanMessenger      canMessenger;
         IioAttrServer     iio;
-        Audio             audio;
+        AdcCapture        adcCapture;
+        LedMatrix         ledMatrix;
 };
 
 #endif

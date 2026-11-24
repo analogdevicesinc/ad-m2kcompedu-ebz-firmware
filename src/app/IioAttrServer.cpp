@@ -50,7 +50,7 @@ static int find_param_index(const char* channel, const char* attr)
     return -1;
 }
 
-/* ADC input channels: voltage2/3 = audio/voltmeter */
+/* ADC input channels: voltage2/3 = adc capture/voltmeter */
 static int adc_channel_index(const char* channel)
 {
     if (strcmp(channel, "voltage2") == 0)
@@ -162,11 +162,11 @@ int IioAttrServer::readAttr(const char* device, iiod_attr* attr, char* buf, uint
 
         int ach = ch - 2;
         if (strcmp(attr->name, "raw") == 0)
-            return snprintf(buf, len, "%d", (int)messenger.state().audioRaw[ach]);
+            return snprintf(buf, len, "%d", (int)messenger.state().adcRaw[ach]);
         if (strcmp(attr->name, "scale") == 0)
-            return snprintf(buf, len, "%.6f", messenger.state().audioScale[ach]);
+            return snprintf(buf, len, "%.6f", messenger.state().adcScale[ach]);
         if (strcmp(attr->name, "enable") == 0)
-            return snprintf(buf, len, "%d", messenger.audioActive() ? 1 : 0);
+            return snprintf(buf, len, "%d", messenger.adcActive() ? 1 : 0);
         return -EINVAL;
     }
 
@@ -203,7 +203,7 @@ int IioAttrServer::writeAttr(const char* device, iiod_attr* attr, char* buf, uin
         int ch = adc_channel_index(attr->channel);
         if (ch >= 2 && strcmp(attr->name, "enable") == 0)
         {
-            messenger.setAudioActive(atol(buf) != 0);
+            messenger.setAdcActive(atol(buf) != 0);
             return (int)len;
         }
         return -EINVAL;

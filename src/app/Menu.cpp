@@ -56,7 +56,7 @@ static constexpr MenuNode mainItems[] = {
     { "Signal Gen",    siggenItems, 4, 0 },
     { "PWM Gen",       pwmItems,    3, 0 },
     { "Calibrate",     calItems,    3, 0 },
-    { "Audio Monitor", nullptr,     0, P_AUDIO },
+    { "ADC Monitor", nullptr,     0, P_ADC },
     { "CAN Messenger", nullptr,     0, P_CAN_MSG },
     { "Voltmeter",     vmeterItems, 2, 0, true },
 };
@@ -207,7 +207,7 @@ static void adjustFreqOrder(float& freq, uint8_t& order, int8_t dir, float minHz
 Menu::Menu(Encoder& encoder, Display& display, Messenger& messenger)
     : encoder(encoder), display(display), messenger(messenger), params{},
       current(&root), cursor(0), editing(false), subCursor(0),
-      viewingCan(false), scrollTop(0), viewingAudio(false), voltmeterAudio(false), depth(0),
+      viewingCan(false), scrollTop(0), viewingAdc(false), voltmeterAdc(false), depth(0),
       buf{}, lastBuf{}, popupText(nullptr), popupUntil(0), lastDraw(0)
 {
 }
@@ -231,10 +231,10 @@ void Menu::init()
     params[P_CAL_OFF]       = { nullptr,         0,    0,   0, false, nullptr, nullptr,    0, true,  false };
     params[P_CAL_SINE]      = { nullptr,         0,    0,   0, false, nullptr, nullptr,    0, true,  false };
     params[P_CAL_SQW]       = { nullptr,         0,    0,   0, false, nullptr, nullptr,    0, true,  false };
-    params[P_AUDIO]         = { nullptr,         0,    0,   0, false, nullptr, nullptr,    0, true,  false };
+    params[P_ADC]         = { nullptr,         0,    0,   0, false, nullptr, nullptr,    0, true,  false };
     params[P_CAN_MSG]       = { nullptr,         0,    0,   0, false, nullptr, nullptr,    0, true,  false };
-    params[P_VOLTMETER_CH1] = { &s.audioRaw[0],  0,    5000,   0, false, "V", nullptr, 0, false,  false };
-    params[P_VOLTMETER_CH2] = { &s.audioRaw[1],  0,    5000,   0, false, "V", nullptr, 0, false,  false };
+    params[P_VOLTMETER_CH1] = { &s.adcRaw[0],  0,    5000,   0, false, "V", nullptr, 0, false,  false };
+    params[P_VOLTMETER_CH2] = { &s.adcRaw[1],  0,    5000,   0, false, "V", nullptr, 0, false,  false };
     buildScreen();
     draw();
     lastDraw = millis();
@@ -246,7 +246,7 @@ void Menu::run()
     Event ev = encoder.poll();
 
     handleEvent(ev);
-    updateVoltmeterAudio();
+    updateVoltmeterAdc();
 
     uint32_t now = millis();
     if (ev != Event::None || now - lastDraw >= DRAW_INTERVAL_MS)
@@ -258,24 +258,24 @@ void Menu::run()
 }
 
 /*
- * The UI voltmeter reads the audio input average value.
- * This function starts audio sampling when the voltmeter UI
+ * The UI voltmeter reads the ADC input average value.
+ * This function starts ADC sampling when the voltmeter UI
  * is enabled and stops it only if the voltmeter UI was the one
  * who started it.
  */
-void Menu::updateVoltmeterAudio()
+void Menu::updateVoltmeterAdc()
 {
     bool inVoltmeter = (current->children == vmeterItems);
 
-    if (inVoltmeter && !voltmeterAudio && !messenger.audioActive())
+    if (inVoltmeter && !voltmeterAdc && !messenger.adcActive())
     {
-        messenger.setAudioActive(true);
-        voltmeterAudio = true;
+        messenger.setAdcActive(true);
+        voltmeterAdc = true;
     }
-    else if (!inVoltmeter && voltmeterAudio)
+    else if (!inVoltmeter && voltmeterAdc)
     {
-        messenger.setAudioActive(false);
-        voltmeterAudio = false;
+        messenger.setAdcActive(false);
+        voltmeterAdc = false;
     }
 }
 
@@ -323,13 +323,13 @@ void Menu::handleEvent(Event ev)
         return;
     }
 
-    if (viewingAudio)
+    if (viewingAdc)
     {
         if (ev == Event::LongPress)
         {
-            viewingAudio = false;
-            messenger.setAudioActive(false);
-            messenger.setAudioStreaming(false);
+            viewingAdc = false;
+            messenger.setAdcActive(false);
+            messenger.setAdcStreaming(false);
         }
         return;
     }
@@ -361,9 +361,9 @@ void Menu::buildScreen()
         return;
     }
 
-    if (viewingAudio)
+    if (viewingAdc)
     {
-        buildAudio();
+        buildAdc();
         return;
     }
 
@@ -702,7 +702,7 @@ void Menu::process(Event ev)
                             }
                             messenger.requestCalibration(type);
                         }
-                        else if (pIdx == P_AUDIO)
+                        else if (pIdx == P_ADC)
                         {
                             if (messenger.readSpiCanBusOwner() == SpiCanBusOwner::Can)
                             {
@@ -710,9 +710,9 @@ void Menu::process(Event ev)
                                           CEN "Remove jumpers" CEN_E, 2);
                                 return;
                             }
-                            viewingAudio = true;
-                            messenger.setAudioActive(true);
-                            messenger.setAudioStreaming(true);
+                            viewingAdc = true;
+                            messenger.setAdcActive(true);
+                            messenger.setAdcStreaming(true);
                         }
                         else if (pIdx == P_CAN_MSG)
                         {
@@ -980,9 +980,9 @@ void Menu::buildMenu()
     buf[pos] = '\0';
 }
 
-void Menu::buildAudio()
+void Menu::buildAdc()
 {
-    sprintf(buf, CEN "Audio Monitor" CEN_E "\n\n"
+    sprintf(buf, CEN "ADC Monitor" CEN_E "\n\n"
                  CEN "Streaming..." CEN_E "\n"
                  CEN "long-press: exit" CEN_E);
 }

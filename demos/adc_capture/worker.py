@@ -1,4 +1,3 @@
-"""AudioWorker — serial reader thread for binary ADC frames."""
 
 import struct
 import threading
@@ -8,15 +7,11 @@ try:
 except Exception:
     _serial = None
 
-AUDIO_BUF_SIZE = 256
-AUDIO_SAMPLE_RATE = 8000
+ADC_BUF_SIZE = 256
+ADC_SAMPLE_RATE = 8000
 
 
-class AudioWorker(threading.Thread):
-    """Reads binary ADC frames from the Arduino serial port.
-
-    Frame format: 0xAA 0x55 <channels:1> <preAmp:BUF_SIZE*int16> [postAmp:BUF_SIZE*int16].
-    ADC values are converted to volts (14-bit, 0-5V range) on this side."""
+class AdcCaptureWorker(threading.Thread):
 
     _ADC_TO_VOLTS = 5.0 / 16383.0
 
@@ -85,19 +80,19 @@ class AudioWorker(threading.Thread):
                     continue
                 channels = ch_byte[0]
 
-                pre_raw = self._read_exact(ser, AUDIO_BUF_SIZE * 2)
+                pre_raw = self._read_exact(ser, ADC_BUF_SIZE * 2)
                 if pre_raw is None:
                     continue
                 pre = [v * self._ADC_TO_VOLTS
-                       for v in struct.unpack(f"<{AUDIO_BUF_SIZE}h", pre_raw)]
+                       for v in struct.unpack(f"<{ADC_BUF_SIZE}h", pre_raw)]
 
                 post = []
                 if channels >= 2:
-                    post_raw = self._read_exact(ser, AUDIO_BUF_SIZE * 2)
+                    post_raw = self._read_exact(ser, ADC_BUF_SIZE * 2)
                     if post_raw is None:
                         continue
                     post = [v * self._ADC_TO_VOLTS
-                            for v in struct.unpack(f"<{AUDIO_BUF_SIZE}h", post_raw)]
+                            for v in struct.unpack(f"<{ADC_BUF_SIZE}h", post_raw)]
 
                 with self._lock:
                     self.pre_buf = pre

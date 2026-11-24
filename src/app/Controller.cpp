@@ -12,7 +12,7 @@ Controller::Controller(Encoder& encoder, Display& display,
                        AD9833& waveformGen, AD5443& amplitudeCtrl,
                        AD5625R& dcOffsetCtrl, PwmOut& pwmOut,
                        uint8_t sqwSwitchPin, uint8_t canRxPin,
-                       uint8_t audioPreAmpPin, uint8_t audioPostAmpPin)
+                       uint8_t adcPreAmpPin, uint8_t adcPostAmpPin)
     : messenger(),
       arbiter(messenger, canRxPin),
       menu(encoder, display, messenger),
@@ -20,7 +20,7 @@ Controller::Controller(Encoder& encoder, Display& display,
       peripherals(waveformGen, amplitudeCtrl, dcOffsetCtrl, pwmOut, sqwSwitchPin, messenger),
       canMessenger(messenger),
       iio(messenger, menu.paramTable()),
-      audio(audioPreAmpPin, audioPostAmpPin, messenger)
+      adcCapture(adcPreAmpPin, adcPostAmpPin, messenger)
 {
 }
 
@@ -32,7 +32,8 @@ void Controller::init()
     peripherals.init();
     canMessenger.init();
     iio.init();
-    audio.init();
+    adcCapture.init();
+    ledMatrix.begin();
 }
 
 void Controller::tick()
@@ -42,6 +43,7 @@ void Controller::tick()
     wizard.run();
     canMessenger.run();
     iio.run();
-    audio.run();
+    adcCapture.run();
     peripherals.run();
+    ledMatrix.tick();
 }

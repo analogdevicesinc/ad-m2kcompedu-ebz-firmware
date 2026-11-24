@@ -9,7 +9,6 @@
 #include "src/drivers/AD9833.h"
 #include "src/drivers/Display.h"
 #include "src/drivers/Encoder.h"
-#include "src/drivers/LedMatrix.h"
 #include "src/drivers/AD5443.h"
 #include "src/drivers/AD5625R.h"
 #include "src/app/Controller.h"
@@ -26,17 +25,14 @@
 #define PIN_SQW_SWITCH         6
 #define PIN_PWM                9
 
-#define PIN_AUDIO_PREAMP       A2
-#define PIN_AUDIO_POSTAMP      A3
+#define PIN_ADC_PREAMP       A2
+#define PIN_ADC_POSTAMP      A3
 
 #define ADDR_DISPLAY      0x3C
 #define ADDR_AD5625R      0x1E
 
-#define LOOP_PERIOD_MS 1UL
-
 Display   display(ADDR_DISPLAY, 64, 128);
 Encoder   encoder(PIN_ENCODER_CLK, PIN_ENCODER_DT, PIN_ENCODER_SW);
-LedMatrix ledMatrix;
 
 AD9833  waveformGen(PIN_AD9833_CS_CAN_TX);
 AD5443  amplitudeCtrl(PIN_AD5443_SYNC);
@@ -46,24 +42,14 @@ PwmOut  pwmOut(PIN_PWM);
 Controller controller(encoder, display,
                       waveformGen, amplitudeCtrl, dcOffsetCtrl, pwmOut,
                       PIN_SQW_SWITCH, PIN_AD9833_SCK_CAN_RX,
-                      PIN_AUDIO_PREAMP, PIN_AUDIO_POSTAMP);
-
-unsigned long currentTimestamp;
-unsigned long lastTimestamp;
+                      PIN_ADC_PREAMP, PIN_ADC_POSTAMP);
 
 void setup() {
     Serial.begin(921600);
 
     controller.init();
-    ledMatrix.begin();
-
-    lastTimestamp = millis();
 }
 
 void loop() {
-    currentTimestamp = millis();
-    if (currentTimestamp - lastTimestamp >= LOOP_PERIOD_MS) {
-        controller.tick();
-        ledMatrix.tick();
-    }
+    controller.tick();
 }

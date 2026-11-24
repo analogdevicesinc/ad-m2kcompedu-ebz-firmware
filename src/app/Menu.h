@@ -28,7 +28,7 @@ enum ParamIdx : uint8_t {
     P_CAL_OFF,
     P_CAL_SINE,
     P_CAL_SQW,
-    P_AUDIO,
+    P_ADC,
     P_CAN_MSG,
     P_VOLTMETER_CH1,
     P_VOLTMETER_CH2,
@@ -66,14 +66,14 @@ class Menu
 
     private:
         void handleEvent(Event ev);
-        void updateVoltmeterAudio();
+        void updateVoltmeterAdc();
         void process(Event ev);
         void adjust(int8_t dir);
         void buildScreen();
         void buildMenu();
         void buildCalibration(const CalView& cal);
         void buildCan(const CanState& can);
-        void buildAudio();
+        void buildAdc();
         void draw();
         void showPopup(const char* text, uint16_t secs);
         bool popupActive();
@@ -92,8 +92,8 @@ class Menu
         uint8_t subCursor;
         bool    viewingCan;
         uint8_t scrollTop;
-        bool    viewingAudio;
-        bool    voltmeterAudio;
+        bool    viewingAdc;
+        bool    voltmeterAdc;
 
         const MenuNode* parentStack[4];
         uint8_t cursorStack[4];

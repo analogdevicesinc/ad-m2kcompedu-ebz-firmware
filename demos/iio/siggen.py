@@ -1,37 +1,19 @@
 #!/usr/bin/env python3
-"""Signal-generator / PWM backend for the board's iiod server (UI-free).
-
-Owns the libiio context to the on-board signal generator (altvoltage0) and PWM
-(altvoltage1) and applies attribute changes -- or replays the demos/iio wave
-sweep -- on a worker thread. The ebz_demo.py panel imports IioWorker/WAVE_NAMES
-from here so the IIO backend lives beside the other iio demos.
-
-libiio is imported lazily inside IioWorker.run so the panel can launch (and
-report the missing library) without it installed. NOTE: this module is imported
-by bare name (`import siggen`), never as a submodule of an `iio` package -- a
-folder named `iio` on sys.path would shadow the real libiio module.
-"""
 
 import threading
 import time
 
 
-# IIO signal-generator wave types (altvoltage0 "wavetype"), index == value.
 WAVE_NAMES = ["Off", "DC", "Sine", "Square", "Triangle"]
 
 
 class IioWorker(threading.Thread):
-    """Owns the libiio context to the board's iiod server. Applies signal-gen /
-    PWM attribute changes, or replays the demos/iio wave sweep, until stopped.
-
-    Parameter keys (UI -> worker): wave, ampl, freq, off (altvoltage0) and
-    pwm_en, pwm_duty, pwm_freq (altvoltage1)."""
 
     def __init__(self, port):
         super().__init__(daemon=True)
         self._port = port
         self._lock = threading.Lock()
-        self._desired = {}       # key -> value, pending writes
+        self._desired = {}
         self._dirty = False
         self._sweep = False
         self._stop = threading.Event()
@@ -39,7 +21,7 @@ class IioWorker(threading.Thread):
         self.status = "Connecting..."
         self.connected = False
         self.sweeping = False
-        self.applied = {}        # last-applied value per key (for read-out)
+        self.applied = {}
 
     def set_param(self, key, value):
         with self._lock:
@@ -55,8 +37,6 @@ class IioWorker(threading.Thread):
 
     @staticmethod
     def _build_sweep_frames():
-        """Flatten the demos/iio/waves.py animation into (key, value, delay)
-        frames so it can be stepped one frame per loop and stopped instantly."""
         frames = []
 
         def add(key, val, delay=0.02):
@@ -64,27 +44,27 @@ class IioWorker(threading.Thread):
 
         add("ampl", 1000); add("freq", 1000); add("off", 0)
         add("pwm_freq", 1000); add("pwm_duty", 0); add("pwm_en", 1)
-        for wt in (2, 3, 4):                      # Sine, Square, Triangle
+        for wt in (2, 3, 4):
             add("wave", wt, 0.1)
-            for duty in range(0, 101, 5):         # fade PWM in
+            for duty in range(0, 101, 5):
                 add("pwm_duty", duty, 0.01)
-            for duty in range(100, -1, -5):       # ...and out
+            for duty in range(100, -1, -5):
                 add("pwm_duty", duty, 0.01)
-            for f in range(1000, 2550, 50):       # sweep frequency up
+            for f in range(1000, 2550, 50):
                 add("freq", f)
-            for f in range(2500, 950, -50):       # ...and down
+            for f in range(2500, 950, -50):
                 add("freq", f)
-            for a in range(1000, 2550, 50):       # sweep amplitude up
+            for a in range(1000, 2550, 50):
                 add("ampl", a)
-            for a in range(2500, 950, -50):       # ...and down
+            for a in range(2500, 950, -50):
                 add("ampl", a)
-            for o in range(0, 300, 50):           # sweep offset
+            for o in range(0, 300, 50):
                 add("off", o)
             for o in range(250, -300, -50):
                 add("off", o)
             for o in range(-250, 50, 50):
                 add("off", o)
-            add("wave", wt, 0.5)                  # brief pause between waves
+            add("wave", wt, 0.5)
         return frames
 
     @staticmethod
@@ -107,7 +87,7 @@ class IioWorker(threading.Thread):
     def run(self):
         try:
             import iio
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self.status = f"iio library missing: {exc}"
             return
 
@@ -120,13 +100,13 @@ class IioWorker(threading.Thread):
                     "device 'm2kcompedu-ebz' not found -- is the board in "
                     "SigGen mode (CAN jumper removed)?"
                 )
-            ch0 = dev.find_channel("altvoltage0", True)   # True = output
+            ch0 = dev.find_channel("altvoltage0", True)
             ch1 = dev.find_channel("altvoltage1", True)
             if ch0 is None or ch1 is None:
                 raise RuntimeError("altvoltage0/1 output channels not found")
             self.connected = True
             self.status = "Connected"
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self.status = f"Connect failed: {exc}"
             return
 
@@ -156,12 +136,12 @@ class IioWorker(threading.Thread):
                             self._apply(ch0, ch1, k, v)
                             self.applied[k] = v
                         self.status = "Connected"
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     self.status = f"Link error: {exc}"
 
                 time.sleep(0.05)
         finally:
-            # Leave the outputs quiet: wave off, PWM disabled.
+
             try:
                 ch0.attrs["wavetype"].value = "0"
                 ch1.attrs["enable"].value = "0"

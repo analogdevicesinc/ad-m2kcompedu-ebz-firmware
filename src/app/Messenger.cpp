@@ -35,7 +35,7 @@ void Messenger::setCanActive(bool active)
     {
         if (spiCanBusOwner != SpiCanBusOwner::Can)
             return;
-        if (serialUserState == SerialUser::Audio)
+        if (serialUserState == SerialUser::Adc)
             return;
         canActiveFlag = true;
         serialUserState = SerialUser::Can;
@@ -44,7 +44,7 @@ void Messenger::setCanActive(bool active)
     {
         canActiveFlag = false;
         if (serialUserState == SerialUser::Can)
-            serialUserState = audioStreamingFlag ? SerialUser::Audio
+            serialUserState = adcStreamingFlag ? SerialUser::Adc
                                                  : SerialUser::Iio;
     }
 }
@@ -54,36 +54,36 @@ bool Messenger::canActive() const
     return canActiveFlag;
 }
 
-void Messenger::setAudioActive(bool active)
+void Messenger::setAdcActive(bool active)
 {
-    audioActiveFlag = active;
+    adcActiveFlag = active;
 }
 
-bool Messenger::audioActive() const
+bool Messenger::adcActive() const
 {
-    return audioActiveFlag;
+    return adcActiveFlag;
 }
 
-void Messenger::setAudioStreaming(bool s)
+void Messenger::setAdcStreaming(bool s)
 {
     if (s)
     {
         if (serialUserState == SerialUser::Can)
             return;
-        audioStreamingFlag = true;
-        serialUserState = SerialUser::Audio;
+        adcStreamingFlag = true;
+        serialUserState = SerialUser::Adc;
     }
     else
     {
-        audioStreamingFlag = false;
-        if (serialUserState == SerialUser::Audio)
+        adcStreamingFlag = false;
+        if (serialUserState == SerialUser::Adc)
             serialUserState = SerialUser::Iio;
     }
 }
 
-bool Messenger::audioStreaming() const
+bool Messenger::adcStreaming() const
 {
-    return audioStreamingFlag;
+    return adcStreamingFlag;
 }
 
 SerialUser Messenger::serialUser() const

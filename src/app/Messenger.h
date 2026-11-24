@@ -22,7 +22,7 @@ enum class SpiCanBusOwner : uint8_t {
 enum class SerialUser : uint8_t {
     Iio,
     Can,
-    Audio,
+    Adc,
 };
 
 enum class CalType : uint8_t {
@@ -89,8 +89,8 @@ struct AppState {
     int16_t  calSqw1V     = 0;
     int16_t  calSqw10V    = 0;
 
-    int16_t  audioRaw[2]     = {0};
-    float    audioScale[2]   = {0};
+    int16_t  adcRaw[2]     = {0};
+    float    adcScale[2]   = {0};
 };
 
 class Messenger
@@ -105,11 +105,11 @@ class Messenger
         void setCanActive(bool active);
         bool canActive() const;
 
-        void setAudioActive(bool active);
-        bool audioActive() const;
+        void setAdcActive(bool active);
+        bool adcActive() const;
 
-        void setAudioStreaming(bool s);
-        bool audioStreaming() const;
+        void setAdcStreaming(bool s);
+        bool adcStreaming() const;
 
         SerialUser serialUser() const;
         bool       serialAvailable() const;
@@ -132,8 +132,8 @@ class Messenger
         AppState       appState;
         SpiCanBusOwner spiCanBusOwner = SpiCanBusOwner::Can;
         bool           canActiveFlag  = false;
-        bool           audioActiveFlag = false;
-        bool           audioStreamingFlag = false;
+        bool           adcActiveFlag = false;
+        bool           adcStreamingFlag = false;
         SerialUser     serialUserState = SerialUser::Iio;
 
         bool    calPending = false;

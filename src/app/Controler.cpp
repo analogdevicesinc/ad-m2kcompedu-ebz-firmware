@@ -9,6 +9,7 @@
  */
 
 #include "Controler.h"
+#include "../iio/iio_server.h"
 
 static const char* waveNames[]  = { "OFF", "DC", "Sine", "Square", "Triangle" };
 static const char* orderNames[] = { "Hz", "KHz", "MHz" };
@@ -108,11 +109,13 @@ void Controler::begin()
 
     menu.render(current, cursor, editing, subCursor, params);
 
-    for (uint8_t i = 0; i < P_COUNT; i++)
+    for (uint8_t i = 0; i <= P_PWM_DUTY; i++) // only prime the flags Peripherals::update() actually consumes.
     {
         refreshFlags[i] = true;
     }
     peripherals.update(state, refreshFlags);
+
+    iio_server_begin(params, refreshFlags);
 }
 
 void Controler::tick()
@@ -120,12 +123,26 @@ void Controler::tick()
     encoder.tick();
 
     Event ev = encoder.poll();
-    if (ev == Event::None)
+    if (ev != Event::None)
     {
-        return;
+        process(ev);
     }
 
-    process(ev);
+    /* Refresh display when settings were adjusted, either via UI or IIO */
+    if (!calWizard.active())
+    {
+        for (uint8_t i = 0; i < P_COUNT; i++)
+        {
+            if (refreshFlags[i])
+            {
+                menu.render(current, cursor, editing, subCursor, params);
+                break;
+            }
+        }
+    }
+
+    /* Picks up refreshFlags set by IIO writes, not just UI events. */
+    peripherals.update(state, refreshFlags);
 }
 
 static void adjustFreqValue(float& freq, uint8_t& order, int8_t dir, float minHz)
@@ -465,5 +482,4 @@ void Controler::process(Event ev)
     }
 
     menu.render(current, cursor, editing, subCursor, params);
-    peripherals.update(state, refreshFlags);
 }

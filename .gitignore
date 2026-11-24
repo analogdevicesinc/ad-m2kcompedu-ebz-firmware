@@ -3,3 +3,6 @@
 
 # Build output
 build/
+
+# VS Code IDE folder
+.vscode/

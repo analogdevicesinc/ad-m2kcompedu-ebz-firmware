@@ -1,6 +1,6 @@
 # AD-M2KCOMPEDU-EBZ Firmware
 
-Arduino firmware for the AD-M2KCOMPEDU-EBZ, an educational add-on board for the ADALM2000. It has a signal generator (sine, square, triangle, DC) with adjustable amplitude, frequency, and DC offset, and a PWM generator with adjustable frequency and duty cycle.
+Arduino firmware for the AD-M2KCOMPEDU-EBZ, an educational add-on board for the ADALM2000. It has a signal generator (sine, square, triangle, DC) with adjustable amplitude, frequency, and DC offset, and a PWM generator with adjustable frequency and duty cycle. Both can also be controlled remotely over the USB port using [libiio](https://github.com/analogdevicesinc/libiio).
 
 ![Board](doc/board.jpg)
 
@@ -31,6 +31,47 @@ Make sure that your board has the firmware uploaded, if not see Building and Fla
 
     ![Generate Wave](doc/usage/pwn_gen_tp.png)   
     ![WaveWave](doc/usage/pwn_wave.png)
+
+## Controlling the board remotely
+
+The firmware runs an IIOD server over the UART (accessible through the USB port of the Uno R4), so the board can also be controlled remotely with any [libiio](https://github.com/analogdevicesinc/libiio) client instead of the rotary encoder/menu. Connect using the serial backend, at 57600 baud:
+
+```
+iio_info -u serial:/dev/ttyACM0,57600
+```
+
+This exposes a single IIO device, `m2kcompedu-ebz`, with two output channels:
+
+- `altvoltage0` : the signal generator: `wavetype`, `amplitude`, `offset`, `frequency`
+- `altvoltage1` : the PWM generator: `enable`, `duty_cycle`, `frequency`
+
+`wavetype` selects the signal generator's waveform and is an index into `OFF (0)`, `DC (1)`, `Sine (2)`, `Square (3)`, `Triangle (4)` e.g. the `wavetype value: 2` in the sample below means the generator is producing a sine wave.
+
+`amplitude` and `offset` are raw millivolt (mV) values, e.g. `amplitude value: 2000` is 2000 mV (2 Vpp), and `offset value: 0` is 0 mV.
+
+```
+IIO context has 1 devices:
+        m2kcompedu-ebz: m2kcompedu-ebz
+                2 channels found:
+                        altvoltage0:  (output)
+                        4 channel-specific attributes found:
+                                attr  0: wavetype value: 2
+                                attr  1: amplitude value: 2000
+                                attr  2: offset value: 0
+                                attr  3: frequency value: 1234.000
+                        altvoltage1:  (output)
+                        3 channel-specific attributes found:
+                                attr  0: enable value: 1
+                                attr  1: duty_cycle value: 85
+                                attr  2: frequency value: 1235.000
+```
+
+Each attribute can be read or written directly with `iio_attr`, e.g. to set the signal generator frequency to 2 kHz:
+
+```
+iio_attr -u serial:/dev/ttyACM0,57600 -c m2kcompedu-ebz altvoltage0 frequency 2000
+```
+
 
 # Building and Flashing the board
 
@@ -163,6 +204,9 @@ src/
     Display.cpp/.h          SH1107 OLED driver (via Adafruit_SH110X)
     Encoder.cpp/.h          Rotary encoder with debounce and event detection
     LedMatrix.cpp/.h        UNO R4 12x8 LED matrix startup/idle animation
+  iio/
+    iiod*.c/h               IIOD server implementation, sourced from the no-OS repository
+    iio_server.cpp          glue code connecting the tinyiiod server to the adjustable parameters
 ```
 
 ### Main Loop
@@ -173,6 +217,11 @@ The main loop runs on a 1 ms tick. Each iteration:
 2. Dispatches events to either the CalibrationWizard (if active) or the Controller FSM
 3. Renders the menu to the OLED display
 4. Pushes changed parameters to hardware (only dirty channels via `refreshFlags[]`)
+
+Independently of the 1 ms tick, every loop iteration also calls `iio_server_poll()`,
+which steps the IIOD server (`iiod_conn_step()`) to service remote IIO client
+requests over UART — reading/writing the same `Param`/`refreshFlags[]` state used
+by the Controller FSM.
 
 ![Main Loop Activity Diagram](doc/call_graph.png)
 
@@ -234,8 +283,3 @@ Corrects sine amplitude gain at two reference points:
 ### Square Wave Amplitude Calibration
 
 Same procedure as sine calibration, but uses `SqwGain_VperLsb` and adjusts `LsbCal_SqWAmp1V` / `LsbCal_SqWAmp10V`.
-
-
-### Can and IIO support
-
-In implementation

@@ -13,6 +13,7 @@
 #include "src/drivers/AD5625R.h"
 #include "src/app/Controler.h"
 #include "src/app/Peripherals.h"
+#include "src/iio/iio_server.h"
 
 // --- Pin definitions ---
 #define PIN_ENCODER_CLK   A1
@@ -61,4 +62,5 @@ void loop() {
         controller.tick();
         ledMatrix.tick();
     }
+    iio_server_poll();
 }

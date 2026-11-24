@@ -79,7 +79,7 @@ static bool isValueGroup(const MenuNode* node)
 
 Controler::Controler(Encoder& encoder, Display& display, Peripherals& peripherals)
     : encoder(encoder), display(display), peripherals(peripherals), menu(display),
-      calWizard(display, peripherals), canMessenger(),
+      calWizard(display, peripherals), iioAttrServer(params, refreshFlags), canMessenger(),
       mode(Mode::SigGen), canRxPin(0),
       current(&root), cursor(0), editing(false), subCursor(0), depth(0),
       //    {wave, ampl, fOrd, freq,   dc, pwmEn, pOrd, pFreq,  duty, calOff, sin1V, sin10V, sqw1V, sqw10V}
@@ -157,7 +157,12 @@ void Controler::begin(uint8_t canRxPin)
     }
     peripherals.updatePwm(state, refreshFlags);
 
-    iio_server_begin(params, refreshFlags);
+    iioAttrServer.begin(IioAttrServer::xml(), IioAttrServer::xmlLen());
+}
+
+void Controler::pollIio()
+{
+    iioAttrServer.poll();
 }
 
 void Controler::tick()
@@ -174,7 +179,7 @@ void Controler::tick()
         if (ev == Event::LongPress)
         {
             canMessenger.stop();
-            iio_server_enable(); // hand the USB serial port back to IIO
+            iioAttrServer.enable(); // hand the USB serial port back to IIO
             menu.render(current, cursor, editing, subCursor, params);
             return;
         }
@@ -566,7 +571,7 @@ void Controler::process(Event ev)
                                 menu.render(current, cursor, editing, subCursor, params);
                                 return;
                             }
-                            iio_server_disable(); // slcan takes over the USB serial port
+                            iioAttrServer.disable(); // slcan takes over the USB serial port
                             canMessenger.start();
                             display.draw_text(CEN "SLCAN" CEN_E "\n\n"
                                               CEN "USB serial" CEN_E "\n\n"

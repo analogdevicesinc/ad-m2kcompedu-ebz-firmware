@@ -16,6 +16,7 @@
 #include "Peripherals.h"
 #include "CalibrationWizard.h"
 #include "CanMessenger.h"
+#include "IioAttrServer.h"
 
 struct AppState {
     uint8_t waveform;
@@ -84,6 +85,7 @@ class Controler
         Controler(Encoder& encoder, Display& display, Peripherals& peripherals);
         void begin(uint8_t canRxPin);
         void tick();
+        void pollIio();
 
     private:
         void process(Event ev);
@@ -99,6 +101,7 @@ class Controler
         Menu menu;
         CalibrationWizard calWizard;
         CanMessenger canMessenger;
+        IioAttrServer iioAttrServer;
 
         AppState state;
         bool refreshFlags[P_COUNT];

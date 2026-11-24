@@ -205,9 +205,37 @@ src/
     Encoder.cpp/.h          Rotary encoder with debounce and event detection
     LedMatrix.cpp/.h        UNO R4 12x8 LED matrix startup/idle animation
   iio/
-    iiod*.c/h               IIOD server implementation, sourced from the no-OS repository
-    iio_server.cpp          glue code connecting the tinyiiod server to the adjustable parameters
+    iiod.c, iiod.h,
+    iiod_private.h          Symlinks into external/no-OS/iio/ (vendored no-OS source, never edited in place)
+    iiod_cxx.h              extern "C" wrapper so .cpp files can include iiod.h (compiled as C)
+    iio.h, no_os_error.h,
+    no_os_util.h            Minimal shims satisfying iiod.c's own includes, without vendoring all of no-OS
+    iio_server.cpp          glue code connecting the IIOD server to the adjustable parameters
+external/
+  no-OS/iio/                Unmodified copy of no-OS's iio/ directory, kept in sync by a scheduled GitHub Action
 ```
+
+### Vendored no-OS IIOD Server
+
+The IIOD server (`iiod.c`, `iiod.h`, `iiod_private.h`) isn't maintained in this
+repo — it's vendored unmodified from the `iio/` directory of
+[analogdevicesinc/no-OS](https://github.com/analogdevicesinc/no-OS). The real
+source lives in `external/no-OS/iio/`, kept current by a scheduled GitHub
+Action; `src/iio/iiod.c`, `iiod.h`, and `iiod_private.h` are symlinks into
+that directory, so the vendored code is never edited in place.
+
+Since this board only needs the IIOD protocol/server (not no-OS's drivers,
+network backends, etc.), a few minimal shim headers live alongside the
+symlinks in `src/iio/` to satisfy `iiod.c`'s own includes without vendoring
+all of no-OS:
+
+- `iio.h` — just the `physical_link_type` enum
+- `no_os_error.h` — `NO_OS_IS_ERR_VALUE`
+- `no_os_util.h` — `no_os_min` and `NO_OS_ARRAY_SIZE`
+
+`iiod_cxx.h` is a separate `extern "C"` wrapper: `iiod.c` compiles as C, but
+`iio_server.cpp` is C++, so C++ translation units should include
+`iiod_cxx.h` instead of `iiod.h` directly to get correct linkage.
 
 ### Main Loop
 

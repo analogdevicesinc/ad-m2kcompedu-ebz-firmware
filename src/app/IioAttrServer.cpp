@@ -13,7 +13,7 @@
 #include <errno.h>
 
 #include "IioAttrServer.h"
-#include "Controler.h"
+#include "Menu.h"
 #include "../iio/iiod.h"
 #include "../iio/iio_server.h"
 
@@ -86,9 +86,22 @@ static void string_to_param(Param* p, const char* buf)
 }
 
 
-IioAttrServer::IioAttrServer(Param* params, bool* refreshFlags)
-    : params(params), refreshFlags(refreshFlags)
+IioAttrServer::IioAttrServer(Messenger& messenger, Param* params)
+    : messenger(messenger), params(params)
 {
+}
+
+void IioAttrServer::init()
+{
+    begin(xml(), xmlLen());
+}
+
+void IioAttrServer::run()
+{
+    if (messenger.readSpiCanBusOwner() == SpiCanBusOwner::SignalGen)
+    {
+        poll();
+    }
 }
 
 float IioAttrServer::getFrequencyHz(uint8_t valIdx, uint8_t ordIdx)
@@ -121,9 +134,6 @@ void IioAttrServer::setFrequencyHz(uint8_t valIdx, uint8_t ordIdx, float minHz, 
 
     *(float*)params[valIdx].value = hz;
     *(uint8_t*)params[ordIdx].value = order;
-
-    refreshFlags[valIdx] = true;
-    refreshFlags[ordIdx] = true;
 }
 
 int IioAttrServer::readAttr(const char* device, iiod_attr* attr, char* buf, uint32_t len)
@@ -161,7 +171,7 @@ int IioAttrServer::writeAttr(const char* device, iiod_attr* attr, char* buf, uin
         return -ENODEV;
     if (attr->type != IIO_ATTR_TYPE_CH_OUT)
         return -EINVAL;
-    if (!params || !refreshFlags)
+    if (!params)
         return -EINVAL;
 
     if (strcmp(attr->name, "frequency") == 0)
@@ -184,7 +194,6 @@ int IioAttrServer::writeAttr(const char* device, iiod_attr* attr, char* buf, uin
         return -EINVAL;
 
     string_to_param(&params[idx], buf);
-    refreshFlags[idx] = true;
 
     return (int)len;
 }

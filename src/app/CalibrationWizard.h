@@ -1,6 +1,8 @@
 /*
  * CalibrationWizard.h
- * Scope: Takes over input/display during calibration.
+ * Scope: Headless calibration model. Steps the signal generator through the
+ *        shared state, trims cal values, persists them to EEPROM, and publishes
+ *        its view state to the bus. Does no rendering of its own.
  *
  * Copyright (c) 2026 Analog Devices, Inc.
  *
@@ -11,50 +13,39 @@
 #define CALIBRATION_WIZARD_H
 
 #include <Arduino.h>
-#include "../drivers/Encoder.h"
-#include "../drivers/Display.h"
-
-struct AppState;
-class Peripherals;
-
-enum class CalType : uint8_t {
-    Offset,
-    SineAmp,
-    SqwAmp
-};
+#include "Messenger.h"
 
 class CalibrationWizard
 {
     public:
-        CalibrationWizard(Display& display, Peripherals& peripherals);
+        CalibrationWizard(Messenger& messenger);
 
-        void start(CalType type, AppState& state, bool* refreshFlags);
-        void process(Event ev, AppState& state, bool* refreshFlags);
-        bool active() const { return _active; }
-        void loadFromEEPROM(AppState& state);
+        void init();
+        void run();
 
     private:
-        void enterStep(AppState& state, bool* refreshFlags);
-        void adjust(int8_t dir, AppState& state, bool* refreshFlags);
-        void render(const AppState& state);
-        void finish(AppState& state, bool* refreshFlags);
+        void    loadFromEEPROM();
+        void    start(CalType type);
+        void    process(CalCmd cmd);
+        void    enterStep();
+        void    adjust(int8_t dir);
+        void    finish();
+        void    publishView();
+        int16_t currentValue() const;
 
-        Display& display;
-        Peripherals& peripherals;
+        Messenger& messenger;
 
-        bool _active;
-        bool done;
+        bool    _active;
+        bool    done;
         CalType calType;
         uint8_t step;
         uint8_t totalSteps;
 
-        uint8_t savedWaveform;
+        uint8_t  savedWaveform;
         uint16_t savedAmplitude;
-        uint8_t savedFreqOrder;
-        float savedFrequency;
-        int16_t savedDcOffset;
-
-    friend class Controler;
+        uint8_t  savedFreqOrder;
+        float    savedFrequency;
+        int16_t  savedDcOffset;
 };
 
 #endif

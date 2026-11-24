@@ -1,6 +1,8 @@
 /*
  * CalibrationWizard.cpp
- * Scope: Takes over input/display during calibration.
+ * Scope: Headless calibration model. Steps the signal generator through the
+ *        shared state, trims cal values, persists them to EEPROM, and publishes
+ *        its view state to the bus. Does no rendering of its own.
  *
  * Copyright (c) 2026 Analog Devices, Inc.
  *
@@ -8,15 +10,13 @@
  */
 
 #include "CalibrationWizard.h"
-#include "Controler.h"
-#include "Peripherals.h"
 #include <EEPROM.h>
 
-constexpr uint16_t EEPROM_ADDR = 0x10;
-static constexpr char EEPROM_MAGIC = 'O';
+constexpr uint16_t EEPROM_ADDR  = 0x10;
+constexpr char     EEPROM_MAGIC = 'O';
 
 struct CalStorage {
-    char id;
+    char    id;
     int16_t calOffset;
     int16_t calSine1V;
     int16_t calSine10V;
@@ -24,40 +24,81 @@ struct CalStorage {
     int16_t calSqw10V;
 };
 
-CalibrationWizard::CalibrationWizard(Display& display, Peripherals& peripherals)
-    : display(display), peripherals(peripherals),
-      _active(false), done(false), calType(CalType::Offset), step(0), totalSteps(0)
+CalibrationWizard::CalibrationWizard(Messenger& messenger)
+    : messenger(messenger),
+      _active(false),
+      done(false),
+      calType(CalType::Offset),
+      step(0),
+      totalSteps(0),
+      savedWaveform(0),
+      savedAmplitude(0),
+      savedFreqOrder(0),
+      savedFrequency(0.0f),
+      savedDcOffset(0)
 {
 }
 
-void CalibrationWizard::loadFromEEPROM(AppState& state)
+void CalibrationWizard::init()
 {
+    loadFromEEPROM();
+}
+
+void CalibrationWizard::run()
+{
+    if (!_active)
+    {
+        if (messenger.calibrationPending())
+        {
+            CalType type = messenger.calibrationRequest();
+            messenger.clearCalibrationRequest();
+            if (messenger.readSpiCanBusOwner() == SpiCanBusOwner::SignalGen)
+            {
+                start(type);
+            }
+        }
+        return;
+    }
+
+    CalCmd cmd = messenger.takeCalCommand();
+    if (cmd != CalCmd::None)
+    {
+        process(cmd);
+    }
+}
+
+void CalibrationWizard::loadFromEEPROM()
+{
+    AppState& s = messenger.state();
     CalStorage stored;
     EEPROM.get(EEPROM_ADDR, stored);
 
     if (stored.id == EEPROM_MAGIC)
     {
-        state.calOffset  = stored.calOffset;
-        state.calSine1V  = stored.calSine1V;
-        state.calSine10V = stored.calSine10V;
-        state.calSqw1V   = stored.calSqw1V;
-        state.calSqw10V  = stored.calSqw10V;
+        s.calOffset  = stored.calOffset;
+        s.calSine1V  = stored.calSine1V;
+        s.calSine10V = stored.calSine10V;
+        s.calSqw1V   = stored.calSqw1V;
+        s.calSqw10V  = stored.calSqw10V;
     }
     else
     {
-        state.calOffset  = 0;
-        state.calSine1V  = 0;
-        state.calSine10V = 0;
-        state.calSqw1V   = 0;
-        state.calSqw10V  = 0;
+        s.calOffset  = 0;
+        s.calSine1V  = 0;
+        s.calSine10V = 0;
+        s.calSqw1V   = 0;
+        s.calSqw10V  = 0;
     }
 }
 
-void CalibrationWizard::start(CalType type, AppState& state, bool* refreshFlags)
+void CalibrationWizard::start(CalType type)
 {
+    AppState& s = messenger.state();
+
     _active = true;
+    done    = false;
     calType = type;
-    step = 0;
+    step    = 0;
 
     switch (type)
     {
@@ -66,240 +107,197 @@ void CalibrationWizard::start(CalType type, AppState& state, bool* refreshFlags)
         case CalType::SqwAmp:  totalSteps = 2; break;
     }
 
-    savedWaveform  = state.waveform;
-    savedAmplitude = state.amplitude;
-    savedFreqOrder = state.freqOrder;
-    savedFrequency = state.frequency;
-    savedDcOffset  = state.dcOffset;
+    savedWaveform  = s.waveform;
+    savedAmplitude = s.amplitude;
+    savedFreqOrder = s.freqOrder;
+    savedFrequency = s.frequency;
+    savedDcOffset  = s.dcOffset;
 
-    enterStep(state, refreshFlags);
+    enterStep();
 }
 
-void CalibrationWizard::enterStep(AppState& state, bool* refreshFlags)
+void CalibrationWizard::enterStep()
 {
+    AppState& s = messenger.state();
+
+    s.freqOrder = 1;
+    s.frequency = 1.0f;
+    s.dcOffset  = 0;
+
     switch (calType)
     {
         case CalType::Offset:
-            state.waveform  = 0;
-            state.amplitude = 0;
-            state.freqOrder = 1;
-            state.frequency = 1.0f;
-            state.dcOffset  = 0;
+            s.waveform  = 0;
+            s.amplitude = 0;
             break;
-
         case CalType::SineAmp:
-            state.waveform  = 2;
-            state.freqOrder = 1;
-            state.frequency = 1.0f;
-            state.dcOffset  = 0;
-            state.amplitude = (step == 0) ? 1000 : 10000;
+            s.waveform  = 2;
+            if (step == 0)
+            {
+                s.amplitude = 1000;
+            }
+            else
+            {
+                s.amplitude = 10000;
+            }
             break;
-
         case CalType::SqwAmp:
-            state.waveform  = 3;
-            state.freqOrder = 1;
-            state.frequency = 1.0f;
-            state.dcOffset  = 0;
-            state.amplitude = (step == 0) ? 1000 : 10000;
+            s.waveform  = 3;
+            if (step == 0)
+            {
+                s.amplitude = 1000;
+            }
+            else
+            {
+                s.amplitude = 10000;
+            }
             break;
     }
 
-    refreshFlags[0] = true;
-    refreshFlags[1] = true;
-    refreshFlags[2] = true;
-    refreshFlags[3] = true;
-    refreshFlags[4] = true;
-
-    peripherals.updateSignalGen(state, refreshFlags);
-    render(state);
+    publishView();
 }
 
-void CalibrationWizard::process(Event ev, AppState& state, bool* refreshFlags)
+void CalibrationWizard::process(CalCmd cmd)
 {
+    AppState& s = messenger.state();
+
     if (done)
     {
-        if (ev == Event::Press || ev == Event::LongPress)
+        if (cmd == CalCmd::Next || cmd == CalCmd::Abort)
         {
-            done = false;
+            done    = false;
             _active = false;
+            publishView();
         }
         return;
     }
 
-    switch (ev)
+    switch (cmd)
     {
-        case Event::TurnCW:
-            adjust(+1, state, refreshFlags);
+        case CalCmd::AdjustUp:
+            adjust(+1);
             break;
-
-        case Event::TurnCCW:
-            adjust(-1, state, refreshFlags);
+        case CalCmd::AdjustDown:
+            adjust(-1);
             break;
-
-        case Event::Press:
+        case CalCmd::Next:
             step++;
             if (step >= totalSteps)
             {
-                finish(state, refreshFlags);
+                finish();
             }
             else
             {
-                enterStep(state, refreshFlags);
+                enterStep();
             }
             break;
-
-        case Event::LongPress:
-            state.waveform  = savedWaveform;
-            state.amplitude = savedAmplitude;
-            state.freqOrder = savedFreqOrder;
-            state.frequency = savedFrequency;
-            state.dcOffset  = savedDcOffset;
-
-            refreshFlags[0] = refreshFlags[1] = refreshFlags[2] = refreshFlags[3] = refreshFlags[4] = true;
-            peripherals.updateSignalGen(state, refreshFlags);
+        case CalCmd::Abort:
+            s.waveform  = savedWaveform;
+            s.amplitude = savedAmplitude;
+            s.freqOrder = savedFreqOrder;
+            s.frequency = savedFrequency;
+            s.dcOffset  = savedDcOffset;
             _active = false;
+            publishView();
             break;
-
-        case Event::None:
+        case CalCmd::None:
             break;
     }
 }
 
-void CalibrationWizard::adjust(int8_t dir, AppState& state, bool* refreshFlags)
+void CalibrationWizard::adjust(int8_t dir)
 {
-    switch (calType)
-    {
-        case CalType::Offset:
-            state.calOffset += dir;
-            if (state.calOffset > 500)  { state.calOffset = 500; }
-            if (state.calOffset < -500) { state.calOffset = -500; }
-            refreshFlags[4] = true;
-            break;
-
-        case CalType::SineAmp:
-            if (step == 0)
-            {
-                state.calSine1V += dir;
-                if (state.calSine1V > 500)  { state.calSine1V = 500; }
-                if (state.calSine1V < -500) { state.calSine1V = -500; }
-            }
-            else
-            {
-                state.calSine10V += dir;
-                if (state.calSine10V > 500)  { state.calSine10V = 500; }
-                if (state.calSine10V < -500) { state.calSine10V = -500; }
-            }
-            refreshFlags[1] = true;
-            break;
-
-        case CalType::SqwAmp:
-            if (step == 0)
-            {
-                state.calSqw1V += dir;
-                if (state.calSqw1V > 500)  { state.calSqw1V = 500; }
-                if (state.calSqw1V < -500) { state.calSqw1V = -500; }
-            }
-            else
-            {
-                state.calSqw10V += dir;
-                if (state.calSqw10V > 500)  { state.calSqw10V = 500; }
-                if (state.calSqw10V < -500) { state.calSqw10V = -500; }
-            }
-            refreshFlags[1] = true;
-            break;
-    }
-
-    peripherals.updateSignalGen(state, refreshFlags);
-    render(state);
-}
-
-void CalibrationWizard::render(const AppState& state)
-{
-    char buf[80];
-    uint8_t pos = 0;
-
-    int16_t val;
-    switch (calType)
-    {
-        case CalType::Offset:  val = state.calOffset; break;
-        case CalType::SineAmp: val = (step == 0) ? state.calSine1V : state.calSine10V; break;
-        case CalType::SqwAmp:  val = (step == 0) ? state.calSqw1V  : state.calSqw10V;  break;
-    }
+    AppState& s = messenger.state();
+    int16_t* target = nullptr;
 
     switch (calType)
     {
         case CalType::Offset:
-            buf[pos++] = '\x01';
-            pos += sprintf(&buf[pos], "Cal Offset");
-            buf[pos++] = '\x02';
-            buf[pos++] = '\n';
-            pos += sprintf(&buf[pos], "Vmeter->SigOut\nAdj Vout~0\n");
+            target = &s.calOffset;
             break;
-
         case CalType::SineAmp:
-            buf[pos++] = '\x01';
-            pos += sprintf(&buf[pos], "Cal Sine");
-            buf[pos++] = '\x02';
-            buf[pos++] = '\n';
-            pos += sprintf(&buf[pos], "Scope->SigOut\nAdj Vout=%sVpp\n",
-                           (step == 0) ? "1" : "10");
+            if (step == 0)
+            {
+                target = &s.calSine1V;
+            }
+            else
+            {
+                target = &s.calSine10V;
+            }
             break;
-
         case CalType::SqwAmp:
-            buf[pos++] = '\x01';
-            pos += sprintf(&buf[pos], "Cal SQW");
-            buf[pos++] = '\x02';
-            buf[pos++] = '\n';
-            pos += sprintf(&buf[pos], "Scope->SigOut\nAdj Vout=%sVpp\n",
-                           (step == 0) ? "1" : "10");
+            if (step == 0)
+            {
+                target = &s.calSqw1V;
+            }
+            else
+            {
+                target = &s.calSqw10V;
+            }
             break;
     }
 
-    buf[pos++] = '\x03';
-    pos += sprintf(&buf[pos], "Offset: %d", val);
-    buf[pos++] = '\x04';
-    buf[pos] = '\0';
+    *target += dir;
+    if (*target > 500)  { *target = 500; }
+    if (*target < -500) { *target = -500; }
 
-    display.draw_text(buf);
-
-    Serial.print(F("[CAL] step="));
-    Serial.print(step);
-    Serial.print(F(" val="));
-    Serial.println(val);
+    publishView();
 }
 
-void CalibrationWizard::finish(AppState& state, bool* refreshFlags)
+void CalibrationWizard::finish()
 {
+    AppState& s = messenger.state();
+
     CalStorage stored;
     stored.id         = EEPROM_MAGIC;
-    stored.calOffset  = state.calOffset;
-    stored.calSine1V  = state.calSine1V;
-    stored.calSine10V = state.calSine10V;
-    stored.calSqw1V   = state.calSqw1V;
-    stored.calSqw10V  = state.calSqw10V;
+    stored.calOffset  = s.calOffset;
+    stored.calSine1V  = s.calSine1V;
+    stored.calSine10V = s.calSine10V;
+    stored.calSqw1V   = s.calSqw1V;
+    stored.calSqw10V  = s.calSqw10V;
     EEPROM.put(EEPROM_ADDR, stored);
 
-    state.waveform  = savedWaveform;
-    state.amplitude = savedAmplitude;
-    state.freqOrder = savedFreqOrder;
-    state.frequency = savedFrequency;
-    state.dcOffset  = savedDcOffset;
-
-    refreshFlags[0] = refreshFlags[1] = refreshFlags[2] = refreshFlags[3] = refreshFlags[4] = true;
-    peripherals.updateSignalGen(state, refreshFlags);
-
-    char buf[64];
-    uint8_t pos = 0;
-    buf[pos++] = '\x01';
-    pos += sprintf(&buf[pos], "Calibration");
-    buf[pos++] = '\x02';
-    buf[pos++] = '\n';
-    buf[pos++] = '\n';
-    buf[pos++] = '\x01';
-    pos += sprintf(&buf[pos], "Done!");
-    buf[pos++] = '\x02';
-    buf[pos] = '\0';
-    display.draw_text(buf);
+    s.waveform  = savedWaveform;
+    s.amplitude = savedAmplitude;
+    s.freqOrder = savedFreqOrder;
+    s.frequency = savedFrequency;
+    s.dcOffset  = savedDcOffset;
 
     done = true;
+    publishView();
+}
+
+int16_t CalibrationWizard::currentValue() const
+{
+    const AppState& s = messenger.state();
+
+    switch (calType)
+    {
+        case CalType::Offset:
+            return s.calOffset;
+        case CalType::SineAmp:
+            if (step == 0)
+            {
+                return s.calSine1V;
+            }
+            return s.calSine10V;
+        case CalType::SqwAmp:
+            if (step == 0)
+            {
+                return s.calSqw1V;
+            }
+            return s.calSqw10V;
+    }
+    return 0;
+}
+
+void CalibrationWizard::publishView()
+{
+    CalView v;
+    v.active = _active;
+    v.done   = done;
+    v.type   = calType;
+    v.step   = step;
+    v.value  = currentValue();
+    messenger.publishCalView(v);
 }

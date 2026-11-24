@@ -6,15 +6,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <AD9833.h>
 #include "src/drivers/Display.h"
 #include "src/drivers/Encoder.h"
 #include "src/drivers/LedMatrix.h"
 #include "src/drivers/AD5443.h"
 #include "src/drivers/AD5625R.h"
-#include "src/app/Controler.h"
-#include "src/app/Peripherals.h"
+#include "src/app/Controller.h"
 
-// --- Pin definitions ---
 #define PIN_ENCODER_CLK   A1
 #define PIN_ENCODER_DT    A0
 #define PIN_ENCODER_SW    0
@@ -32,7 +31,6 @@
 
 #define LOOP_PERIOD_MS 1UL
 
-// --- Driver objects ---
 Display   display(ADDR_DISPLAY, 64, 128);
 Encoder   encoder(PIN_ENCODER_CLK, PIN_ENCODER_DT, PIN_ENCODER_SW);
 LedMatrix ledMatrix;
@@ -42,18 +40,17 @@ AD5443  amplitudeCtrl(PIN_AD5443_SYNC);
 AD5625R dcOffsetCtrl(ADDR_AD5625R);
 PwmOut  pwmOut(PIN_PWM);
 
-// --- App objects ---
-Peripherals peripherals(waveformGen, amplitudeCtrl, dcOffsetCtrl, pwmOut, PIN_SQW_SWITCH);
-Controler controller(encoder, display, peripherals);
+Controller controller(encoder, display,
+                      waveformGen, amplitudeCtrl, dcOffsetCtrl, pwmOut,
+                      PIN_SQW_SWITCH, PIN_AD9833_SCK_CAN_RX);
 
-// --- Timers ---
 unsigned long currentTimestamp;
 unsigned long lastTimestamp;
 
 void setup() {
     Serial.begin(115200);
 
-    controller.begin(PIN_AD9833_SCK_CAN_RX);
+    controller.init();
     ledMatrix.begin();
 
     lastTimestamp = millis();
@@ -65,5 +62,4 @@ void loop() {
         controller.tick();
         ledMatrix.tick();
     }
-    controller.pollIio();
 }

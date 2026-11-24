@@ -17,13 +17,16 @@
 
 struct Param;
 struct iiod_attr;
+class Messenger;
 
 #define IIO_DEVICE_NAME "m2kcompedu-ebz"
 
 class IioAttrServer : public IioServer
 {
     public:
-        IioAttrServer(Param* params, bool* refreshFlags);
+        IioAttrServer(Messenger& messenger, Param* params);
+        void init();
+        void run();
 
         static const char* xml();
         static uint32_t xmlLen();
@@ -36,8 +39,8 @@ class IioAttrServer : public IioServer
         float getFrequencyHz(uint8_t valIdx, uint8_t ordIdx);
         void setFrequencyHz(uint8_t valIdx, uint8_t ordIdx, float minHz, float hz);
 
+        Messenger& messenger;
         Param* params;
-        bool* refreshFlags;
 };
 
 #endif

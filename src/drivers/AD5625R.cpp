@@ -21,28 +21,24 @@ AD5625R::AD5625R(uint8_t i2cAddr)
 
 void AD5625R::begin()
 {
-    // Power down unused channels C and D
     Wire.beginTransmission(addr);
     Wire.write((CMD_PWR_REG << 3) | 0x00);
     Wire.write(0x00);
     Wire.write(0x3C);
     Wire.endTransmission();
 
-    // Auto LDAC on channels A and B
     Wire.beginTransmission(addr);
     Wire.write((CMD_LDAC_REG << 3) | 0x00);
     Wire.write(0x00);
     Wire.write(0x03);
     Wire.endTransmission();
 
-    // Internal reference on
     Wire.beginTransmission(addr);
     Wire.write((CMD_INTERNAL_REF << 3) | 0x00);
     Wire.write(0x00);
     Wire.write(0x01);
     Wire.endTransmission();
 
-    // Both channels to midscale (zero offset)
     write(2048, 0);
     write(2048, 1);
 }

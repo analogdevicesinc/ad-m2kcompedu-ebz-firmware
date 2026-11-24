@@ -59,8 +59,6 @@ void Display::draw_text(const char text[])
     bool striking = false;
     uint8_t st_start_x = 0;
 
-    // First pass for centering: need line length to compute offset
-    // We'll handle it inline by buffering per-line when centering is active
     for (uint8_t i = 0; text[i] != '\0'; i++) {
         char c = text[i];
 
@@ -137,20 +135,15 @@ void Display::draw_text(const char text[])
 
 void Display::popup(const char text[], uint16_t secs)
 {
-    // Snapshot the current framebuffer so we can restore it afterwards.
     const size_t bufSize = (size_t)width * height / 8;
     uint8_t* fb = oled.getBuffer();
     uint8_t saved[bufSize];
     memcpy(saved, fb, bufSize);
 
-    // Show the popup (draw_text wipes the screen and pushes to the panel).
     draw_text(text);
 
-    // Blocking wait: the main loop stalls here, so no input is processed and
-    // no parameter can change while the popup is visible.
     delay((uint32_t)secs * 1000UL);
 
-    // Restore the previous screen exactly as it was.
     memcpy(fb, saved, bufSize);
     oled.display();
 }

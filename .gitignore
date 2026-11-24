@@ -8,5 +8,6 @@ build/
 .vscode/
 
 
+# Python bytecode caches (any directory, any depth)
 __pycache__/
 *.py[cod]

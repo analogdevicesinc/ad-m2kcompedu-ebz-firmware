@@ -14,6 +14,7 @@ constexpr float SIN_GAIN_V_PER_LSB = 0.0053311;
 constexpr float SQW_GAIN_V_PER_LSB = 0.03889;
 constexpr float DC_OFF_V_PER_LSB   = 0.0031640;
 constexpr float CRYSTAL_FREQ       = 20000000.0;
+constexpr uint32_t ADC_PERIOD_MS   = 100;
 
 static void claimSpi()
 {
@@ -39,12 +40,14 @@ Peripherals::Peripherals(AD9833& waveformGen, AD5443& amplitudeCtrl,
       pwmRunning(false),
       messenger(messenger),
       applied{},
-      lastOwner(SpiCanBusOwner::Can)
+      lastOwner(SpiCanBusOwner::Can),
+      lastAdcMs(0)
 {
 }
 
 void Peripherals::init()
 {
+    beginAdc();
     beginPwm();
     dcOffsetCtrl.begin();
 
@@ -113,6 +116,8 @@ void Peripherals::run()
         applied.pwmFrequency = state.pwmFrequency;
         applied.dutyCycle    = state.dutyCycle;
     }
+
+    updateAdc();
 }
 
 void Peripherals::beginSignalGen()
@@ -131,6 +136,18 @@ void Peripherals::beginPwm()
 {
     pwmOut.begin(1000.0f, 50.0f);
     pwmOut.suspend();
+}
+
+void Peripherals::beginAdc()
+{
+    pinMode(A2, INPUT);
+    pinMode(A3, INPUT);
+
+    AppState& state = messenger.state();
+    for (uint8_t i = 0; i < 2; i++)
+    {
+        state.voltmeterScale[i] = (float)ADC_FULL_SCALE_MV / (float)ADC_MAX_COUNT;
+    }
 }
 
 void Peripherals::updateWave(const AppState& state)
@@ -238,6 +255,25 @@ void Peripherals::updateDcOffset(const AppState& state)
 
     dcOffsetCtrl.write(dacA, 0);
     dcOffsetCtrl.write(dacB, 1);
+}
+
+void Peripherals::updateAdc()
+{
+    uint32_t now = millis();
+    if (now - lastAdcMs < ADC_PERIOD_MS)
+    {
+        return;
+    }
+    lastAdcMs = now;
+
+    AppState& state = messenger.state();
+    const uint8_t pins[2] = { A2, A3 };
+    for (uint8_t i = 0; i < 2; i++)
+    {
+        uint16_t raw = analogRead(pins[i]);
+        state.voltmeterRaw[i] = raw;
+        state.voltmeterMv[i]  = ((uint32_t)raw * ADC_FULL_SCALE_MV + ADC_MAX_COUNT / 2) / ADC_MAX_COUNT;
+    }
 }
 
 void Peripherals::applyPwm(const AppState& state)

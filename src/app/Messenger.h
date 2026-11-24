@@ -62,6 +62,9 @@ struct CanState {
     }
 };
 
+constexpr uint32_t ADC_FULL_SCALE_MV = 5000;
+constexpr uint32_t ADC_MAX_COUNT     = 1023;
+
 struct AppState {
     uint8_t  waveform     = 0;
     uint16_t amplitude    = 1000;
@@ -79,6 +82,10 @@ struct AppState {
     int16_t  calSine10V   = 0;
     int16_t  calSqw1V     = 0;
     int16_t  calSqw10V    = 0;
+
+    uint16_t voltmeterRaw[2] = {0};
+    uint16_t voltmeterMv[2]  = {0};
+    float voltmeterScale[2] = {0};
 };
 
 class Messenger

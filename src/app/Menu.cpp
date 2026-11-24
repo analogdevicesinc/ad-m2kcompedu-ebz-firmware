@@ -12,6 +12,7 @@
 #include "Menu.h"
 
 static constexpr uint32_t DRAW_INTERVAL_MS = 33;
+static constexpr uint8_t  MENU_VISIBLE_ROWS = 4;
 
 static const char* waveNames[]  = { "OFF", "DC", "Sine", "Square", "Triangle" };
 static const char* orderNames[] = { "Hz", "KHz", "MHz" };
@@ -46,14 +47,20 @@ static constexpr MenuNode calItems[] = {
     { "Calibrate SQW Amp",  nullptr, 0, P_CAL_SQW },
 };
 
+static constexpr MenuNode vmeterItems[] = {
+    { "A2",   nullptr, 0, P_VOLTMETER_CH1 },
+    { "A3",   nullptr, 0, P_VOLTMETER_CH2 },
+};
+
 static constexpr MenuNode mainItems[] = {
     { "Signal Gen",    siggenItems, 4, 0 },
     { "PWM Gen",       pwmItems,    3, 0 },
     { "Calibrate",     calItems,    3, 0 },
     { "CAN Messenger", nullptr,     0, P_CAN_MSG },
+    { "Voltmeter",     vmeterItems, 2, 0, true },
 };
 
-static constexpr MenuNode root = { "Main", mainItems, 4, 0 };
+static constexpr MenuNode root = { "Main", mainItems, 5, 0 };
 
 static int32_t readParam(const Param& p)
 {
@@ -199,7 +206,7 @@ static void adjustFreqOrder(float& freq, uint8_t& order, int8_t dir, float minHz
 Menu::Menu(Encoder& encoder, Display& display, Messenger& messenger)
     : encoder(encoder), display(display), messenger(messenger), params{},
       current(&root), cursor(0), editing(false), subCursor(0),
-      viewingCan(false), depth(0),
+      viewingCan(false), scrollTop(0), depth(0),
       buf{}, lastBuf{}, popupText(nullptr), popupUntil(0), lastDraw(0)
 {
 }
@@ -211,20 +218,21 @@ void Menu::init()
 
     AppState& s = messenger.state();
 
-    params[P_WAVE]         = { &s.waveform,     0,    4,   1, true,  nullptr, waveNames,  5, false, false };
-    params[P_AMPL]         = { &s.amplitude,    0, 5000, 100, false, "V",     nullptr,    0, false, false };
-    params[P_FREQ_ORD]     = { &s.freqOrder,    0,    2,   1, false, nullptr, orderNames, 3, false, false };
-    params[P_FREQ_VAL]     = { &s.frequency,    0,    0,   0, false, nullptr, nullptr,    0, false, true  };
-    params[P_DC]           = { &s.dcOffset, -2500, 2500, 100, false, "V",     nullptr,    0, false, false };
-    params[P_PWM_EN]       = { &s.pwmEnabled,   0,    1,   1, true,  nullptr, onOffNames, 2, false, false };
-    params[P_PWM_FREQ_ORD] = { &s.pwmFreqOrder, 0,    2,   1, false, nullptr, orderNames, 3, false, false };
-    params[P_PWM_FREQ_VAL] = { &s.pwmFrequency, 0,    0,   0, false, nullptr, nullptr,    0, false, true  };
-    params[P_PWM_DUTY]     = { &s.dutyCycle,    0,  100,   1, false, "%",     nullptr,    0, false, false };
-    params[P_CAL_OFF]      = { nullptr,         0,    0,   0, false, nullptr, nullptr,    0, true,  false };
-    params[P_CAL_SINE]     = { nullptr,         0,    0,   0, false, nullptr, nullptr,    0, true,  false };
-    params[P_CAL_SQW]      = { nullptr,         0,    0,   0, false, nullptr, nullptr,    0, true,  false };
-    params[P_CAN_MSG]      = { nullptr,         0,    0,   0, false, nullptr, nullptr,    0, true,  false };
-
+    params[P_WAVE]          = { &s.waveform,     0,    4,   1, true,  nullptr, waveNames,  5, false, false };
+    params[P_AMPL]          = { &s.amplitude,    0, 5000, 100, false, "V",     nullptr,    0, false, false };
+    params[P_FREQ_ORD]      = { &s.freqOrder,    0,    2,   1, false, nullptr, orderNames, 3, false, false };
+    params[P_FREQ_VAL]      = { &s.frequency,    0,    0,   0, false, nullptr, nullptr,    0, false, true  };
+    params[P_DC]            = { &s.dcOffset, -2500, 2500, 100, false, "V",     nullptr,    0, false, false };
+    params[P_PWM_EN]        = { &s.pwmEnabled,   0,    1,   1, true,  nullptr, onOffNames, 2, false, false };
+    params[P_PWM_FREQ_ORD]  = { &s.pwmFreqOrder, 0,    2,   1, false, nullptr, orderNames, 3, false, false };
+    params[P_PWM_FREQ_VAL]  = { &s.pwmFrequency, 0,    0,   0, false, nullptr, nullptr,    0, false, true  };
+    params[P_PWM_DUTY]      = { &s.dutyCycle,    0,  100,   1, false, "%",     nullptr,    0, false, false };
+    params[P_CAL_OFF]       = { nullptr,         0,    0,   0, false, nullptr, nullptr,    0, true,  false };
+    params[P_CAL_SINE]      = { nullptr,         0,    0,   0, false, nullptr, nullptr,    0, true,  false };
+    params[P_CAL_SQW]       = { nullptr,         0,    0,   0, false, nullptr, nullptr,    0, true,  false };
+    params[P_CAN_MSG]       = { nullptr,         0,    0,   0, false, nullptr, nullptr,    0, true,  false };
+    params[P_VOLTMETER_CH1] = { &s.voltmeterMv[0],     0,    5000,   0, false, "V", nullptr, 0, false,  false };
+    params[P_VOLTMETER_CH2] = { &s.voltmeterMv[1],     0,    5000,   0, false, "V", nullptr, 0, false,  false };
     buildScreen();
     draw();
     lastDraw = millis();
@@ -413,7 +421,7 @@ void Menu::buildCan(const CanState& can)
 
 bool Menu::isValueGroup(const MenuNode* node)
 {
-    if (!node->children || node->numChildren == 0)
+    if (!node->children || node->numChildren == 0 || node->submenu)
     {
         return false;
     }
@@ -726,6 +734,15 @@ void Menu::formatValue(char* out, uint8_t& pos, const Param& p, uint8_t pIdx)
         }
         pos += sprintf(&out[pos], "%ld.%ld%s", (long)whole, (long)frac, unit);
     }
+    else if (pIdx == P_VOLTMETER_CH1 || pIdx == P_VOLTMETER_CH2)
+    {
+        const char* unit = "";
+        if (p.unit)
+        {
+            unit = p.unit;
+        }
+        pos += sprintf(&out[pos], "%ld.%02ld%s", (long)(val / 1000), (long)(val % 1000 / 10), unit);
+    }
     else
     {
         const char* unit = "";
@@ -860,7 +877,22 @@ void Menu::buildMenu()
 
     uint8_t wave = *((uint8_t*)params[P_WAVE].value);
 
-    for (uint8_t i = 0; i < current->numChildren; i++)
+    if (cursor < scrollTop)
+    {
+        scrollTop = cursor;
+    }
+    else if (cursor >= scrollTop + MENU_VISIBLE_ROWS)
+    {
+        scrollTop = cursor - MENU_VISIBLE_ROWS + 1;
+    }
+
+    uint8_t end = scrollTop + MENU_VISIBLE_ROWS;
+    if (end > current->numChildren)
+    {
+        end = current->numChildren;
+    }
+
+    for (uint8_t i = scrollTop; i < end; i++)
     {
         const MenuNode* item = &current->children[i];
         bool selected = (i == cursor);

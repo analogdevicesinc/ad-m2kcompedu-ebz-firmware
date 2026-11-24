@@ -50,6 +50,17 @@ static int find_param_index(const char* channel, const char* attr)
     return -1;
 }
 
+/* ADC input channels voltage0/voltage1 map to A2/A3 */
+static int adc_channel_index(const char* channel)
+{
+    if (strcmp(channel, "voltage0") == 0)
+        return 0;
+    if (strcmp(channel, "voltage1") == 0)
+        return 1;
+
+    return -1;
+}
+
 /* IIOD sends and receives everything as strings; handling funcs are necessary */
 static int param_to_string(const Param* p, char* buf, uint32_t len)
 {
@@ -142,6 +153,20 @@ int IioAttrServer::readAttr(const char* device, iiod_attr* attr, char* buf, uint
 
     if (strcmp(device, IIO_DEVICE_NAME) != 0)
         return -ENODEV;
+
+    if (attr->type == IIO_ATTR_TYPE_CH_IN)
+    {
+        int ch = adc_channel_index(attr->channel);
+        if (ch < 0)
+            return -EINVAL;
+
+        if (strcmp(attr->name, "raw") == 0)
+            return snprintf(buf, len, "%u", (unsigned)messenger.state().voltmeterRaw[ch]);
+        if (strcmp(attr->name, "scale") == 0)
+            return snprintf(buf, len, "%.6f", messenger.state().voltmeterScale[ch]);
+        return -EINVAL;
+    }
+
     if (attr->type != IIO_ATTR_TYPE_CH_OUT)
         return -EINVAL;
     if (!params)

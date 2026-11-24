@@ -29,6 +29,8 @@ enum ParamIdx : uint8_t {
     P_CAL_SINE,
     P_CAL_SQW,
     P_CAN_MSG,
+    P_VOLTMETER_CH1,
+    P_VOLTMETER_CH2,
     P_COUNT
 };
 
@@ -50,6 +52,7 @@ struct MenuNode {
     const MenuNode* children;
     uint8_t         numChildren;
     uint8_t         paramIndex;
+    bool            submenu;
 };
 
 class Menu
@@ -85,6 +88,7 @@ class Menu
         bool    editing;
         uint8_t subCursor;
         bool    viewingCan;
+        uint8_t scrollTop;
 
         const MenuNode* parentStack[4];
         uint8_t cursorStack[4];

@@ -26,6 +26,10 @@ class Display
         void begin();
         void draw_text(const char text[]);
 
+        // Show a blocking popup for `secs` seconds, then restore the previous
+        // screen. Blocks the main loop, so no input is processed while active.
+        void popup(const char text[], uint16_t secs);
+
     private:
         Adafruit_SH1107 oled;
         uint8_t i2c_address;

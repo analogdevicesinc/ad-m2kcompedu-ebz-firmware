@@ -110,7 +110,7 @@ void CalibrationWizard::enterStep(AppState& state, bool* refreshFlags)
     refreshFlags[3] = true;
     refreshFlags[4] = true;
 
-    peripherals.update(state, refreshFlags);
+    peripherals.updateSignalGen(state, refreshFlags);
     render(state);
 }
 
@@ -156,7 +156,7 @@ void CalibrationWizard::process(Event ev, AppState& state, bool* refreshFlags)
             state.dcOffset  = savedDcOffset;
 
             refreshFlags[0] = refreshFlags[1] = refreshFlags[2] = refreshFlags[3] = refreshFlags[4] = true;
-            peripherals.update(state, refreshFlags);
+            peripherals.updateSignalGen(state, refreshFlags);
             _active = false;
             break;
 
@@ -209,7 +209,7 @@ void CalibrationWizard::adjust(int8_t dir, AppState& state, bool* refreshFlags)
             break;
     }
 
-    peripherals.update(state, refreshFlags);
+    peripherals.updateSignalGen(state, refreshFlags);
     render(state);
 }
 
@@ -286,7 +286,7 @@ void CalibrationWizard::finish(AppState& state, bool* refreshFlags)
     state.dcOffset  = savedDcOffset;
 
     refreshFlags[0] = refreshFlags[1] = refreshFlags[2] = refreshFlags[3] = refreshFlags[4] = true;
-    peripherals.update(state, refreshFlags);
+    peripherals.updateSignalGen(state, refreshFlags);
 
     char buf[64];
     uint8_t pos = 0;

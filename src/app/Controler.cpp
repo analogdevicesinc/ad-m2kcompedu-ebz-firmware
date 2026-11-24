@@ -10,6 +10,7 @@
 
 #include "Controler.h"
 #include "../iio/iio_server.h"
+#include <SPI.h>
 
 static const char* waveNames[]  = { "OFF", "DC", "Sine", "Square", "Triangle" };
 static const char* orderNames[] = { "Hz", "KHz", "MHz" };
@@ -46,12 +47,13 @@ static constexpr MenuNode calItems[] = {
 };
 
 static constexpr MenuNode mainItems[] = {
-    { "Signal Gen", siggenItems, 4, 0 },
-    { "PWM Gen",    pwmItems,    3, 0 },
-    { "Calibrate",  calItems,    3, 0 },
+    { "Signal Gen",   siggenItems, 4, 0 },
+    { "PWM Gen",      pwmItems,    3, 0 },
+    { "Calibrate",    calItems,    3, 0 },
+    { "CAN Messenger", nullptr,    0, P_CAN_MSG },
 };
 
-static constexpr MenuNode root = { "Main", mainItems, 3, 0 };
+static constexpr MenuNode root = { "Main", mainItems, 4, 0 };
 
 static Param params[P_COUNT];
 
@@ -77,7 +79,8 @@ static bool isValueGroup(const MenuNode* node)
 
 Controler::Controler(Encoder& encoder, Display& display, Peripherals& peripherals)
     : encoder(encoder), display(display), peripherals(peripherals), menu(display),
-      calWizard(display, peripherals),
+      calWizard(display, peripherals), canMessenger(),
+      mode(Mode::SigGen), canRxPin(0),
       current(&root), cursor(0), editing(false), subCursor(0), depth(0),
       //    {wave, ampl, fOrd, freq,   dc, pwmEn, pOrd, pFreq,  duty, calOff, sin1V, sin10V, sqw1V, sqw10V}
       state{0, 1000, 1, 1.0f, 0, false, 0, 100.0f, 50, 0, 0, 0, 0, 0},
@@ -86,11 +89,35 @@ Controler::Controler(Encoder& encoder, Display& display, Peripherals& peripheral
 {
 }
 
-void Controler::begin()
+Mode Controler::detectMode()
 {
+    // SPI is released between updates (claim-per-transaction in Peripherals),
+    // so the shared SCK/RX pin is free GPIO here and can be read directly.
+    pinMode(canRxPin, INPUT);
+
+    Mode detected = Mode::SigGen;
+    unsigned long t0 = millis();
+    while (millis() - t0 < 10)
+    {
+        if (digitalRead(canRxPin) == HIGH)
+        {
+            detected = Mode::Can;
+            break;
+        }
+    }
+
+    return detected;
+}
+
+void Controler::begin(uint8_t canRxPin)
+{
+    this->canRxPin = canRxPin;
+
     display.begin();
     encoder.begin();
-    peripherals.begin();
+
+    mode = detectMode();
+
     calWizard.loadFromEEPROM(state);
 
     //                    { value,              min,  max, step, wrap, unit,    names,      nCnt, action, float }
@@ -106,14 +133,29 @@ void Controler::begin()
     params[P_CAL_OFF]      = { nullptr,              0,      0,    0, false, nullptr, nullptr,    0, true,  false };
     params[P_CAL_SINE]     = { nullptr,              0,      0,    0, false, nullptr, nullptr,    0, true,  false };
     params[P_CAL_SQW]      = { nullptr,              0,      0,    0, false, nullptr, nullptr,    0, true,  false };
+    params[P_CAN_MSG]      = { nullptr,              0,      0,    0, false, nullptr, nullptr,    0, true,  false };
 
     menu.render(current, cursor, editing, subCursor, params);
 
-    for (uint8_t i = 0; i <= P_PWM_DUTY; i++) // only prime the flags Peripherals::update() actually consumes.
+    peripherals.beginPwm();
+
+    // Only prime the flags the peripherals actually consume/clear (0..P_PWM_DUTY).
+    // The action-param flags (cal/CAN) are never cleared, so priming them would
+    // leave the tick() render loop firing every tick.
+    for (uint8_t i = 0; i <= P_PWM_DUTY; i++)
     {
         refreshFlags[i] = true;
     }
-    peripherals.update(state, refreshFlags);
+
+    // The signal-gen SPI pins are shared with the CAN transceiver; only bring
+    // them up and push initial state in SigGen mode so we never drive the
+    // shared bus while CAN owns it.
+    if (mode == Mode::SigGen)
+    {
+        peripherals.beginSignalGen();
+        peripherals.updateSignalGen(state, refreshFlags);
+    }
+    peripherals.updatePwm(state, refreshFlags);
 
     iio_server_begin(params, refreshFlags);
 }
@@ -121,15 +163,62 @@ void Controler::begin()
 void Controler::tick()
 {
     encoder.tick();
-
     Event ev = encoder.poll();
+
+    // While the CAN messenger owns the bus, pump serial<->CAN and let a
+    // long-press exit. Skip the menu/detectMode path entirely so we never
+    // reconfigure pin 13 out from under the active CAN receiver.
+    if (canMessenger.active())
+    {
+        canMessenger.tick();
+        if (ev == Event::LongPress)
+        {
+            canMessenger.stop();
+            iio_server_enable(); // hand the USB serial port back to IIO
+            menu.render(current, cursor, editing, subCursor, params);
+            return;
+        }
+
+        // Out-of-band diagnostics: mirror slcan state to the OLED. This never
+        // touches the serial stream (unlike debug prints, which would corrupt
+        // it), so it's safe while a host is talking slcan. Rate-limited to ~4Hz
+        // and only redrawn when a counter changes, so it can't starve the CAN
+        // pump above. TEMPORARY bring-up aid.
+        //   line 1: SLCAN <O|C>  -> is the channel logically open?
+        //   rx= frames drained from the CAN bus (drive answering at all?)
+        //   tx= t/T frames sent OK        ef= sends that failed
+        //   c=  last slcan command char handled (proves serial RX is alive)
+        static uint32_t canDbgLast = 0;
+        static uint32_t canDbgSnap = 0xFFFFFFFFUL;
+        uint32_t snap = (uint32_t)canMessenger.rxCount()
+                      ^ ((uint32_t)canMessenger.txCount() << 8)
+                      ^ ((uint32_t)canMessenger.txFailCount() << 16)
+                      ^ ((uint32_t)(uint8_t)canMessenger.lastCmd() << 24)
+                      ^ (canMessenger.channelOpen() ? 0x40000000UL : 0UL);
+        if (snap != canDbgSnap && (millis() - canDbgLast) > 250)
+        {
+            char dbg[64];
+            snprintf(dbg, sizeof(dbg),
+                     "SLCAN %c\nrx=%u\ntx=%u\nef=%u c=%c",
+                     canMessenger.channelOpen() ? 'O' : 'C',
+                     (unsigned)canMessenger.rxCount(),
+                     (unsigned)canMessenger.txCount(),
+                     (unsigned)canMessenger.txFailCount(),
+                     canMessenger.lastCmd() ? canMessenger.lastCmd() : '-');
+            display.draw_text(dbg);
+            canDbgLast = millis();
+            canDbgSnap = snap;
+        }
+        return;
+    }
+
     if (ev != Event::None)
     {
         process(ev);
     }
 
     /* Refresh display when settings were adjusted, either via UI or IIO */
-    if (!calWizard.active())
+    if (!calWizard.active() && !canMessenger.active())
     {
         for (uint8_t i = 0; i < P_COUNT; i++)
         {
@@ -142,7 +231,11 @@ void Controler::tick()
     }
 
     /* Picks up refreshFlags set by IIO writes, not just UI events. */
-    peripherals.update(state, refreshFlags);
+    if (mode == Mode::SigGen)
+    {
+        peripherals.updateSignalGen(state, refreshFlags);
+    }
+    peripherals.updatePwm(state, refreshFlags);
 }
 
 static void adjustFreqValue(float& freq, uint8_t& order, int8_t dir, float minHz)
@@ -256,6 +349,18 @@ void Controler::adjust(int8_t dir)
     if (p->isAction)
     {
         return;
+    }
+
+    if (mode == Mode::Can)
+    {
+        if (pIdx == P_WAVE || pIdx == P_AMPL ||
+            pIdx == P_FREQ_VAL || pIdx == P_FREQ_ORD)
+        {
+            display.popup(CEN "CAN active" CEN_E "\n\n"
+                          CEN "Scoate jumperu rasa matii" CEN_E, 2);
+            menu.render(current, cursor, editing, subCursor, params);
+            return;
+        }
     }
 
     if (pIdx == P_FREQ_VAL)
@@ -450,6 +555,32 @@ void Controler::process(Event ev)
                     uint8_t pIdx = child->paramIndex;
                     if (params[pIdx].isAction)
                     {
+                        // Calibration drives the shared SPI bus; not allowed
+                        // while CAN owns it.
+                        if (pIdx == P_CAN_MSG)
+                        {
+                            if (mode != Mode::Can)
+                            {
+                                display.popup(CEN "Set CAN jumper" CEN_E "\n\n"
+                                              CEN "then reboot" CEN_E, 2);
+                                menu.render(current, cursor, editing, subCursor, params);
+                                return;
+                            }
+                            iio_server_disable(); // slcan takes over the USB serial port
+                            canMessenger.start();
+                            display.draw_text(CEN "SLCAN" CEN_E "\n\n"
+                                              CEN "USB serial" CEN_E "\n\n"
+                                              CEN "Hold to exit" CEN_E);
+                            return;
+                        }
+
+                        if (mode != Mode::SigGen)
+                        {
+                            display.popup(CEN "CAN active" CEN_E "\n\n"
+                                          CEN "Cal unavailable" CEN_E, 2);
+                            menu.render(current, cursor, editing, subCursor, params);
+                            return;
+                        }
                         if (pIdx == P_CAL_OFF)
                         {
                             calWizard.start(CalType::Offset, state, refreshFlags);
@@ -482,4 +613,28 @@ void Controler::process(Event ev)
     }
 
     menu.render(current, cursor, editing, subCursor, params);
+
+    // Re-detect the jumper live so switching SigGen/IIO <-> CAN never needs a
+    // reboot. Safe to reconfigure the shared SCK/RX pin here: process() only
+    // runs when the CAN messenger is inactive (tick() early-returns otherwise)
+    // and calibration is not running (guarded above), so nothing else owns the
+    // pin, and the SPI updates that follow reclaim it per-transaction.
+    Mode prev = mode;
+    mode = detectMode();
+
+    // Returning from CAN to SigGen: the AD9833's control lines are the shared
+    // pins (SCK = pin 13 = CAN RX, FSYNC/CS = pin 10 = CAN TX), so CAN traffic
+    // clocks garbage into its registers and leaves the generator mis-configured.
+    // A plain updateSignalGen() only rewrites wave/freq/amp, not the control
+    // register set up in begin(), so re-init the chip and re-prime the full
+    // state; the SPI writes happen in tick(). Without this it stayed broken
+    // until a reboot.
+    if (mode == Mode::SigGen && prev == Mode::Can)
+    {
+        peripherals.beginSignalGen();
+        for (uint8_t i = 0; i <= P_PWM_DUTY; i++)
+        {
+            refreshFlags[i] = true;
+        }
+    }
 }

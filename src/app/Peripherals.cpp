@@ -9,11 +9,28 @@
 
 #include "Peripherals.h"
 #include "Controler.h"
+#include <SPI.h>
 
 constexpr float SIN_GAIN_V_PER_LSB = 0.0053311;
 constexpr float SQW_GAIN_V_PER_LSB = 0.03889;
 constexpr float DC_OFF_V_PER_LSB   = 0.0031640;
 constexpr float CRYSTAL_FREQ       = 20000000.0;
+
+// Claim the shared SPI bus for a signal-gen transaction. The first transfer
+// after SPI.begin() on this core is unreliable, so prime the bus with a dummy
+// transfer (no chip select asserted, so no device latches it) to absorb it.
+static void claimSpi()
+{
+    SPI.begin();
+    SPI.beginTransaction(SPISettings(8000000, MSBFIRST, SPI_MODE2));
+    SPI.transfer16(0x0000);
+    SPI.endTransaction();
+}
+
+static void releaseSpi()
+{
+    SPI.end();
+}
 
 Peripherals::Peripherals(AD9833& waveformGen, AD5443& amplitudeCtrl,
                          AD5625R& dcOffsetCtrl, PwmOut& pwmOut,
@@ -27,26 +44,37 @@ Peripherals::Peripherals(AD9833& waveformGen, AD5443& amplitudeCtrl,
 {
 }
 
-void Peripherals::begin()
+void Peripherals::beginSignalGen()
 {
     pinMode(sqwSwitchPin, OUTPUT);
     digitalWrite(sqwSwitchPin, HIGH);
 
-    amplitudeCtrl.begin();
-    dcOffsetCtrl.begin();
+    dcOffsetCtrl.begin();   // I2C, independent of the shared SPI bus
 
+    claimSpi();
+    amplitudeCtrl.begin();
     waveformGen.begin();
     waveformGen.setCrystalFrequency(CRYSTAL_FREQ);
+    releaseSpi();
+}
 
+void Peripherals::beginPwm()
+{
     pwmOut.begin(1000.0f, 50.0f);
     pwmOut.suspend();
 }
 
-void Peripherals::update(const AppState& state, bool* refreshFlags)
+void Peripherals::updateSignalGen(const AppState& state, bool* refreshFlags)
 {
-    bool waveChanged = refreshFlags[0];
+    bool spiTouched = refreshFlags[0] || refreshFlags[1] ||
+                      refreshFlags[2] || refreshFlags[3];
 
-    if (refreshFlags[2] || refreshFlags[3] || waveChanged)
+    if (spiTouched)
+    {
+        claimSpi();
+    }
+
+    if (refreshFlags[2] || refreshFlags[3] || refreshFlags[0])
     {
         updateFrequency(state);
         refreshFlags[2] = false;
@@ -63,14 +91,25 @@ void Peripherals::update(const AppState& state, bool* refreshFlags)
         updateAmplitude(state);
         refreshFlags[1] = false;
     }
+
+    if (spiTouched)
+    {
+        releaseSpi();
+    }
+
+    // DC offset is on I2C, not the shared SPI bus.
     if (refreshFlags[4])
     {
         updateDcOffset(state);
         refreshFlags[4] = false;
     }
+}
+
+void Peripherals::updatePwm(const AppState& state, bool* refreshFlags)
+{
     if (refreshFlags[5] || refreshFlags[6] || refreshFlags[7] || refreshFlags[8])
     {
-        updatePwm(state);
+        applyPwm(state);
         refreshFlags[5] = refreshFlags[6] = refreshFlags[7] = refreshFlags[8] = false;
     }
 }
@@ -162,7 +201,7 @@ void Peripherals::updateDcOffset(const AppState& state)
     dcOffsetCtrl.write(dacB, 1);
 }
 
-void Peripherals::updatePwm(const AppState& state)
+void Peripherals::applyPwm(const AppState& state)
 {
     if (state.pwmEnabled && !pwmRunning)
     {

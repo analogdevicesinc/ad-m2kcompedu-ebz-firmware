@@ -20,10 +20,13 @@
 #define PIN_ENCODER_DT    A0
 #define PIN_ENCODER_SW    0
 
-#define PIN_AD9833_CS     10
-#define PIN_AD5443_SYNC   8
-#define PIN_SQW_SWITCH    6
-#define PIN_PWM           9
+#define PIN_AD9833_CS_CAN_TX   10
+#define PIN_AD9833_SCK_CAN_RX  13
+#define PIN_AD9833_MOSI        11
+#define PIN_SPI_MISO           12
+#define PIN_AD5443_SYNC        8
+#define PIN_SQW_SWITCH         6
+#define PIN_PWM                9
 
 #define ADDR_DISPLAY      0x3C
 #define ADDR_AD5625R      0x1E
@@ -35,7 +38,7 @@ Display   display(ADDR_DISPLAY, 64, 128);
 Encoder   encoder(PIN_ENCODER_CLK, PIN_ENCODER_DT, PIN_ENCODER_SW);
 LedMatrix ledMatrix;
 
-AD9833  waveformGen(PIN_AD9833_CS);
+AD9833  waveformGen(PIN_AD9833_CS_CAN_TX);
 AD5443  amplitudeCtrl(PIN_AD5443_SYNC);
 AD5625R dcOffsetCtrl(ADDR_AD5625R);
 PwmOut  pwmOut(PIN_PWM);
@@ -44,13 +47,14 @@ PwmOut  pwmOut(PIN_PWM);
 Peripherals peripherals(waveformGen, amplitudeCtrl, dcOffsetCtrl, pwmOut, PIN_SQW_SWITCH);
 Controler controller(encoder, display, peripherals);
 
-// --- Timmers ---
+// --- Timers ---
 unsigned long currentTimestamp;
 unsigned long lastTimestamp;
 
 void setup() {
-    Serial.begin(57600);
-    controller.begin();
+    Serial.begin(115200);
+
+    controller.begin(PIN_AD9833_SCK_CAN_RX);
     ledMatrix.begin();
 
     lastTimestamp = millis();

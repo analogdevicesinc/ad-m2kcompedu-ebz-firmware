@@ -15,6 +15,7 @@
 #include "Menu.h"
 #include "Peripherals.h"
 #include "CalibrationWizard.h"
+#include "CanMessenger.h"
 
 struct AppState {
     uint8_t waveform;
@@ -61,6 +62,7 @@ enum ParamIdx : uint8_t {
     P_CAL_OFF,
     P_CAL_SINE,
     P_CAL_SQW,
+    P_CAN_MSG,
     P_COUNT
 };
 
@@ -71,25 +73,35 @@ struct MenuNode {
     uint8_t paramIndex;
 };
 
+enum class Mode : uint8_t {
+    SigGen,
+    Can,
+};
+
 class Controler
 {
     public:
         Controler(Encoder& encoder, Display& display, Peripherals& peripherals);
-        void begin();
+        void begin(uint8_t canRxPin);
         void tick();
 
     private:
         void process(Event ev);
         void adjust(int8_t dir);
+        Mode detectMode();
+
+        Mode mode;
+        uint8_t canRxPin;
 
         Encoder& encoder;
         Display& display;
         Peripherals& peripherals;
         Menu menu;
         CalibrationWizard calWizard;
+        CanMessenger canMessenger;
 
         AppState state;
-        bool refreshFlags[12];
+        bool refreshFlags[P_COUNT];
 
         const MenuNode* current;
         uint8_t cursor;

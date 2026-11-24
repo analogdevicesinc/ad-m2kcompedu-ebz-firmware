@@ -33,10 +33,20 @@ import tkinter as tk
 from collections import deque
 from tkinter import ttk
 
+import matplotlib
+matplotlib.use("TkAgg")
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
 try:
     from serial.tools import list_ports
-except Exception:  # pyserial should be present, but be safe
+except Exception:
     list_ports = None
+
+from audio import (
+    AudioWorker, AUDIO_BUF_SIZE, AUDIO_SAMPLE_RATE,
+    FILTER_TYPES, biquad_coeffs, apply_biquad, compute_fft_db,
+)
 
 
 # COMMUTATION_MODE (0x2004) enum -- APP_SHADOW, resets to 0 every boot.
@@ -85,6 +95,12 @@ T_VEL   = "#4a9eff"   # velocity: actual trace
 T_TGT   = "#9aa4b2"   # velocity: target trace (dashed)
 T_CUR   = "#ff9e40"   # motor-current trace
 T_UQ    = "#3ddc84"   # FOC UQ trace
+
+# Audio tab traces.
+T_PRE   = "#4a9eff"   # pre-amp (blue, matches velocity)
+T_POST  = "#ff9e40"   # post-amp (orange, matches current)
+T_FILT  = "#3ddc84"   # filtered output (green)
+
 
 
 def int_flexible(x):
@@ -164,7 +180,7 @@ class MotorWorker(threading.Thread):
                 interface="slcan",
                 channel=self._port,
                 bitrate=500000,
-                ttyBaudrate=115200,
+                ttyBaudrate=921600,
             )
             node = net.add_node(self._node_id, self._eds)
             node.nmt.wait_for_heartbeat()
@@ -270,8 +286,6 @@ class IioWorker(threading.Thread):
             add("wave", wt, 0.1)
             for duty in range(0, 101, 5):         # fade PWM in
                 add("pwm_duty", duty, 0.01)
-            for duty in range(100, -1, -5):       # ...and out
-                add("pwm_duty", duty, 0.01)
             for f in range(1000, 2550, 50):       # sweep frequency up
                 add("freq", f)
             for f in range(2500, 950, -50):       # ...and down
@@ -282,6 +296,8 @@ class IioWorker(threading.Thread):
                 add("ampl", a)
             for o in range(0, 300, 50):           # sweep offset
                 add("off", o)
+            for duty in range(100, -1, -5):       # fade PWM out
+                add("pwm_duty", duty, 0.01)
             for o in range(250, -300, -50):
                 add("off", o)
             for o in range(-250, 50, 50):
@@ -313,7 +329,7 @@ class IioWorker(threading.Thread):
             self.status = f"iio library missing: {exc}"
             return
 
-        uri = f"serial:{self._port},115200,8n1"
+        uri = f"serial:{self._port},921600,8n1"
         try:
             ctx = iio.Context(uri)
             dev = ctx.find_device("m2kcompedu-ebz")
@@ -395,6 +411,111 @@ def fmt_hz(v):
     if v >= 1_000:
         return f"{v / 1_000:.2f} kHz"
     return f"{v:.0f} Hz"
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# MplPlot — embedded matplotlib figure for waveform / FFT display
+# ---------------------------------------------------------------------------
+
+class MplPlot:
+    ANN_RED = "#d62728"
+
+    def __init__(self, parent, title, width=440, height=180, fixed_range=None,
+                 xlabel="Sample", ylabel="Volts"):
+        self.fixed_range = fixed_range
+        self.xlabel = xlabel
+        self.ylabel = ylabel
+
+        wrap = tk.Frame(parent, bg=CARD)
+        wrap.pack(fill="x", pady=(6, 0))
+
+        tk.Label(wrap, text=title, bg=CARD, fg=FG,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(0, 4))
+
+        dpi = 100
+        self.fig = Figure(figsize=(width / dpi, height / dpi), dpi=dpi,
+                          facecolor="#ffffff")
+        self.ax = self.fig.add_subplot(111)
+        self.fig.subplots_adjust(left=0.12, right=0.97, top=0.92, bottom=0.24)
+
+        self.mpl_canvas = FigureCanvasTkAgg(self.fig, master=wrap)
+        self.mpl_canvas.get_tk_widget().pack(fill="x")
+
+        self._style_ax()
+
+    def _style_ax(self):
+        ax = self.ax
+        ax.set_facecolor("#ffffff")
+        ax.grid(True, color="#d0d0d0", linewidth=0.5)
+        ax.tick_params(axis="both", labelsize=8, colors="#333333")
+        ax.set_xlabel(self.xlabel, fontsize=9, color="#555555")
+        ax.set_ylabel(self.ylabel, fontsize=9, color="#555555")
+        for spine in ax.spines.values():
+            spine.set_color("#333333")
+            spine.set_linewidth(0.8)
+
+    def set_traces(self, data_dict, annotations=None):
+        ax = self.ax
+        ax.clear()
+        self._style_ax()
+
+        if not data_dict:
+            self.mpl_canvas.draw_idle()
+            return
+
+        is_fft = self.xlabel == "Frequency [Hz]"
+        for label, (samples, color) in data_dict.items():
+            is_raw = label == "Raw"
+            ax.plot(samples, color=color,
+                    linewidth=1.2 if (is_raw and not is_fft) else 2.0,
+                    alpha=0.6 if (is_raw and not is_fft) else 1.0,
+                    label=label)
+
+        n_samples = max(len(s) for s, _ in data_dict.values())
+
+        if self.xlabel == "Frequency [Hz]":
+            ax.set_xlim(0, n_samples - 1)
+            n_ticks = 6
+            positions = [int(i * (n_samples - 1) / (n_ticks - 1))
+                         for i in range(n_ticks)]
+            labels = [f"{p * AUDIO_SAMPLE_RATE / 2 / (n_samples - 1):.0f}"
+                      for p in positions]
+            ax.set_xticks(positions)
+            ax.set_xticklabels(labels)
+        else:
+            ax.set_xlim(0, n_samples - 1)
+
+        if self.fixed_range is not None:
+            ax.set_ylim(self.fixed_range)
+
+        ax.legend(fontsize=8, loc="upper right", framealpha=0.8,
+                  edgecolor="#d0d0d0")
+
+        if annotations:
+            for ann in annotations:
+                if ann[0] == "vline":
+                    _, sample_idx, label = ann
+                    ax.axvline(x=sample_idx, color=self.ANN_RED,
+                               linestyle="--", linewidth=1.5)
+                    yhi = ax.get_ylim()[1]
+                    ylo = ax.get_ylim()[0]
+                    ax.text(sample_idx + 2, yhi - (yhi - ylo) * 0.05, label,
+                            color=self.ANN_RED, fontsize=7,
+                            fontweight="bold", va="top",
+                            family="monospace")
+                elif ann[0] == "text":
+                    _, x_frac, y_frac, label = ann
+                    ax.text(x_frac, 1.0 - y_frac, label,
+                            transform=ax.transAxes,
+                            color=self.ANN_RED, fontsize=8,
+                            fontweight="bold", va="top",
+                            family="monospace")
+
+        self.mpl_canvas.draw_idle()
 
 
 class StripChart:
@@ -513,6 +634,7 @@ class App:
         self.default_port = args.iface
         self.worker = None       # MotorWorker
         self.iio = None          # IioWorker
+        self.audio = None        # AudioWorker
 
         root.title("AD-M2KCOMPEDU-EBZ Demo  by Analog Devices")
         root.configure(bg=BG, padx=18, pady=16)
@@ -540,11 +662,14 @@ class App:
         nb.pack(fill="both", expand=True)
         self.motor_tab = tk.Frame(nb, bg=BG)
         self.iio_tab = tk.Frame(nb, bg=BG)
+        self.audio_tab = tk.Frame(nb, bg=BG)
         nb.add(self.motor_tab, text="  Motor Drive · CAN  ")
         nb.add(self.iio_tab, text="  Signal Generator · IIO  ")
+        nb.add(self.audio_tab, text="  Audio Amplifier · ADC  ")
 
         self._build_motor_tab(self.motor_tab, args)
         self._build_iio_tab(self.iio_tab)
+        self._build_audio_tab(self.audio_tab)
 
         # --- footer credit --------------------------------------------------
         tk.Frame(root, bg=BORDER, height=1).pack(fill="x", pady=(10, 8))
@@ -555,6 +680,7 @@ class App:
         self.disc_btn.state(["disabled"])       # nothing to disconnect yet
         self._set_iio_controls(False)
         self.iio_disc_btn.state(["disabled"])
+        self.aud_disc_btn.state(["disabled"])
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._refresh()
 
@@ -846,6 +972,248 @@ class App:
             self.pwm_en_chk, self.duty_scale, self.pwm_freq_entry,
         ]
 
+    # -- audio tab ---------------------------------------------------------------
+    def _build_audio_tab(self, tab):
+        self._banner(
+            tab,
+            "Audio demo mode. Connect the M2K signal generator (or mic) to "
+            "A2 (pre-amp) and A3 (post-amp). The firmware must be running the "
+            "audio sketch (dual-channel ADC capture at 8 kHz).",
+        )
+
+        body = tk.Frame(tab, bg=BG)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(0, weight=1, uniform="aud")
+        body.columnconfigure(1, weight=1, uniform="aud")
+        left = tk.Frame(body, bg=BG)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
+        right = tk.Frame(body, bg=BG)
+        right.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
+
+        # === connection card ================================================
+        self.aud_port_var = tk.StringVar(value=self.default_port)
+        conn = self._card(left, "Connection")
+        row = tk.Frame(conn, bg=CARD)
+        row.pack(fill="x")
+        tk.Label(row, text="COM port", bg=CARD, fg=MUTED,
+                 font=("Segoe UI", 8)).pack(anchor="w")
+        self.aud_port_cbo = ttk.Combobox(row, textvariable=self.aud_port_var,
+                                         width=12, values=self._list_ports())
+        self.aud_port_cbo.pack(anchor="w", pady=(2, 8))
+
+        stat_row = tk.Frame(conn, bg=CARD)
+        stat_row.pack(fill="x", pady=(0, 8))
+        self.aud_status_dot = tk.Label(stat_row, text="●", bg=CARD, fg=MUTED,
+                                       font=("Segoe UI", 10))
+        self.aud_status_dot.pack(side="left", padx=(0, 6))
+        self.aud_status_var = tk.StringVar(value="Idle")
+        tk.Label(stat_row, textvariable=self.aud_status_var, bg=CARD, fg=FG,
+                 font=("Segoe UI", 9)).pack(side="left")
+
+        aud_conn_btns = tk.Frame(conn, bg=CARD)
+        aud_conn_btns.pack(fill="x")
+        self.aud_conn_btn = ttk.Button(aud_conn_btns, text="Connect",
+                                       style="Accent.TButton",
+                                       command=self._aud_connect)
+        self.aud_conn_btn.pack(side="left", expand=True, fill="x", padx=(0, 3))
+        self.aud_disc_btn = ttk.Button(aud_conn_btns, text="Disconnect",
+                                       style="Stop.TButton",
+                                       command=self._aud_disconnect)
+        self.aud_disc_btn.pack(side="left", expand=True, fill="x", padx=(3, 0))
+
+        # === waveform card (raw pre/post) ===================================
+        wave_card = self._card(left, "ADC Waveform")
+        desc_row = tk.Frame(wave_card, bg=CARD)
+        desc_row.pack(fill="x")
+        tk.Label(desc_row, text="Raw ADC data: blue = pre-amplifier (A2), "
+                 "orange = post-amplifier (A3)",
+                 bg=CARD, fg=MUTED, font=("Segoe UI", 7),
+                 wraplength=340, justify="left").pack(side="left")
+        self.show_post_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(desc_row, text="Show post-amplifier output",
+                        variable=self.show_post_var,
+                        style="Card.TCheckbutton").pack(side="right")
+
+        self.timebase_var = tk.IntVar(value=AUDIO_BUF_SIZE)
+        tb_wrap = tk.Frame(wave_card, bg=CARD)
+        tb_wrap.pack(fill="x", pady=(2, 0))
+        tb_head = tk.Frame(tb_wrap, bg=CARD)
+        tb_head.pack(fill="x")
+        tk.Label(tb_head, text="Time base", bg=CARD, fg=MUTED,
+                 font=("Segoe UI", 8)).pack(side="left")
+        self._tb_val = tk.StringVar(
+            value=f"{AUDIO_BUF_SIZE} samples · "
+                  f"{AUDIO_BUF_SIZE / AUDIO_SAMPLE_RATE * 1000:.1f} ms")
+        tk.Label(tb_head, textvariable=self._tb_val, bg=CARD, fg=RED,
+                 font=("Consolas", 9, "bold")).pack(side="right")
+
+        def _tb_moved(v):
+            n = int(float(v))
+            ms = n / AUDIO_SAMPLE_RATE * 1000
+            self._tb_val.set(f"{n} samples · {ms:.1f} ms")
+
+        tk.Scale(tb_wrap, from_=16, to=AUDIO_BUF_SIZE, orient="horizontal",
+                 length=300, resolution=8, showvalue=False,
+                 variable=self.timebase_var, command=_tb_moved,
+                 bg=CARD, fg=FG, troughcolor=TROUGH,
+                 activebackground=ACCENT, highlightthickness=0, bd=1,
+                 sliderrelief="raised").pack(fill="x")
+
+        self.raw_plot = MplPlot(wave_card, "Pre-amp / Post-amp",
+                                     width=440, height=180, fixed_range=(-0.3, 5.3))
+
+        # === filter card (right column) =====================================
+        self.filter_slots = []
+
+        fc = self._card(right, "Biquad Filter")
+        tk.Label(fc, text="Apply a digital biquad filter (Direct Form II "
+                 "Transposed) to the raw ADC signal in real time.",
+                 bg=CARD, fg=MUTED, font=("Segoe UI", 7),
+                 wraplength=420, justify="left").pack(anchor="w", pady=(0, 6))
+        slot = {}
+
+        top_row = tk.Frame(fc, bg=CARD)
+        top_row.pack(fill="x", pady=(0, 6))
+
+        tk.Label(top_row, text="Type", bg=CARD, fg=MUTED,
+                 font=("Segoe UI", 8)).pack(side="left")
+        slot["type_var"] = tk.StringVar(value="Off")
+        slot["type_cbo"] = ttk.Combobox(
+            top_row, textvariable=slot["type_var"], width=12,
+            state="readonly", values=FILTER_TYPES)
+        slot["type_cbo"].pack(side="left", padx=(6, 14))
+        slot["type_cbo"].bind("<<ComboboxSelected>>",
+                              lambda _e: self._on_filter_change(0))
+
+        tk.Label(top_row, text="Source", bg=CARD, fg=MUTED,
+                 font=("Segoe UI", 8)).pack(side="left")
+        slot["src_var"] = tk.StringVar(value="Pre-amp")
+        slot["src_cbo"] = ttk.Combobox(
+            top_row, textvariable=slot["src_var"], width=9,
+            state="readonly", values=["Pre-amp", "Post-amp"])
+        slot["src_cbo"].pack(side="left", padx=(6, 0))
+
+        slot["fc_var"] = tk.DoubleVar(value=1000.0)
+        slot["fc_scale"] = self._audio_log_slider(
+            fc, "Cutoff frequency (Fc) — the -3 dB point of the filter",
+            "Hz", 10, 4000, slot["fc_var"],
+            lambda _v: self._on_filter_change(0))
+
+        slot["q_var"] = tk.DoubleVar(value=0.707)
+        slot["q_scale"] = self._audio_slider(
+            fc, "Q factor — sharpness of the filter (0.707 = Butterworth)",
+            "", 0.1, 10.0, slot["q_var"],
+            lambda _v: self._on_filter_change(0), res=0.01)
+
+        slot["gain_var"] = tk.DoubleVar(value=0.0)
+        slot["gain_frame"] = tk.Frame(fc, bg=CARD)
+        slot["gain_scale"] = self._audio_slider(
+            slot["gain_frame"], "Gain — boost/cut at Fc (Peak & Shelf only)",
+            "dB", -12.0, 12.0,
+            slot["gain_var"],
+            lambda _v: self._on_filter_change(0), res=0.1)
+
+        slot["plot"] = MplPlot(fc,
+            "Time domain — grey: raw input, green: filter applied from midpoint",
+            width=440, height=160, fixed_range=(-0.3, 5.3))
+        slot["fft_plot"] = MplPlot(fc,
+            "FFT — grey: raw spectrum, green: filtered spectrum",
+            width=440, height=160, fixed_range=(-80, 3),
+            xlabel="Frequency [Hz]", ylabel="dB")
+        slot["state"] = None
+        self.filter_slots.append(slot)
+
+    def _audio_log_slider(self, parent, label, unit, lo, hi, var, cmd):
+        """Slider with red value readout for the audio filter controls."""
+        wrap = tk.Frame(parent, bg=CARD)
+        wrap.pack(fill="x", pady=(0, 8))
+        head = tk.Frame(wrap, bg=CARD)
+        head.pack(fill="x")
+        tk.Label(head, text=label, bg=CARD, fg=MUTED,
+                 font=("Segoe UI", 8)).pack(side="left")
+        valvar = tk.StringVar(value=f"{var.get():.0f} {unit}")
+        tk.Label(head, textvariable=valvar, bg=CARD, fg=RED,
+                 font=("Consolas", 9, "bold")).pack(side="right")
+
+        def on_move(v):
+            valvar.set(f"{float(v):.0f} {unit}")
+            cmd(v)
+
+        s = tk.Scale(wrap, from_=lo, to=hi, orient="horizontal", length=300,
+                     resolution=1, showvalue=False, variable=var,
+                     command=on_move, bg=CARD, fg=FG, troughcolor=TROUGH,
+                     activebackground=ACCENT, highlightthickness=0, bd=1,
+                     sliderrelief="raised")
+        s.pack(fill="x")
+        return s
+
+    def _audio_slider(self, parent, label, unit, lo, hi, var, cmd, res=1):
+        """Slider with red value readout for the audio filter controls."""
+        wrap = tk.Frame(parent, bg=CARD)
+        wrap.pack(fill="x", pady=(0, 8))
+        head = tk.Frame(wrap, bg=CARD)
+        head.pack(fill="x")
+        tk.Label(head, text=label, bg=CARD, fg=MUTED,
+                 font=("Segoe UI", 8)).pack(side="left")
+        valvar = tk.StringVar(value=f"{var.get()} {unit}")
+        tk.Label(head, textvariable=valvar, bg=CARD, fg=RED,
+                 font=("Consolas", 9, "bold")).pack(side="right")
+
+        def on_move(v):
+            valvar.set(f"{float(v):.4g} {unit}")
+            cmd(v)
+
+        s = tk.Scale(wrap, from_=lo, to=hi, orient="horizontal", length=300,
+                     resolution=res, showvalue=False, variable=var,
+                     command=on_move, bg=CARD, fg=FG, troughcolor=TROUGH,
+                     activebackground=ACCENT, highlightthickness=0, bd=1,
+                     sliderrelief="raised")
+        s.pack(fill="x")
+        return s
+
+    def _on_filter_change(self, idx):
+        slot = self.filter_slots[idx]
+        ftype = slot["type_var"].get()
+        needs_gain = ftype in ("Peak", "Low Shelf", "High Shelf")
+        if needs_gain:
+            slot["gain_frame"].pack(fill="x")
+        else:
+            slot["gain_frame"].pack_forget()
+        slot["state"] = None
+
+    # -- audio control helpers ------------------------------------------------
+    def _aud_connect(self):
+        if self.audio and self.audio.is_alive():
+            return
+        self._stop_motor_worker()
+        self._stop_iio()
+        port = self.aud_port_var.get().strip()
+        if not port:
+            self.aud_status_var.set("Bad input: port empty")
+            return
+        self.aud_conn_btn.state(["disabled"])
+        self.aud_disc_btn.state(["!disabled"])
+        self.aud_status_var.set("Connecting...")
+        self.audio = AudioWorker(port)
+        self.audio.start()
+
+    def _aud_disconnect(self):
+        if not (self.audio and self.audio.is_alive()):
+            return
+        self.aud_disc_btn.state(["disabled"])
+        self.aud_status_var.set("Disconnecting...")
+        self.root.update_idletasks()
+        self._stop_audio()
+        self.aud_status_var.set("Disconnected")
+        self.aud_conn_btn.state(["!disabled"])
+        self.aud_conn_btn.configure(text="Connect")
+
+    def _stop_audio(self):
+        if self.audio and self.audio.is_alive():
+            self.audio.request_stop()
+            self.audio.join(timeout=3.0)
+        self.audio = None
+
     def _slider(self, parent, label, unit, lo, hi, var, cmd, res=1):
         wrap = tk.Frame(parent, bg=CARD)
         wrap.pack(fill="x", pady=(0, 8))
@@ -1003,8 +1371,9 @@ class App:
     def _connect(self):
         if self.worker and self.worker.is_alive():
             return
-        # Only one mode can own the port -- drop any IIO session first.
+        # Only one mode can own the port -- drop any other session first.
         self._stop_iio()
+        self._stop_audio()
         # Read the form fields; bail with a clear message on bad input.
         try:
             node = int_flexible(self.node_var.get().strip())
@@ -1073,8 +1442,9 @@ class App:
     def _iio_connect(self):
         if self.iio and self.iio.is_alive():
             return
-        # Only one mode can own the port -- drop any motor session first.
+        # Only one mode can own the port -- drop any other session first.
         self._stop_motor_worker()
+        self._stop_audio()
         port = self.iio_port_var.get().strip()
         if not port:
             self.iio_status_var.set("Bad input: port empty")
@@ -1221,16 +1591,85 @@ class App:
                 self.iio_disc_btn.state(["disabled"])
                 self.sweep_var.set("▶ Run demo sweep")
 
+        # --- audio tab ---
+        aw = self.audio
+        if aw:
+            self.aud_status_var.set(aw.status)
+            self.aud_status_dot.configure(
+                fg=self._status_color(aw.connected, ACCENT, aw.status))
+            if aw.is_alive():
+                self.aud_conn_btn.state(["disabled"])
+                self.aud_disc_btn.state(["!disabled"])
+                self.aud_port_cbo.state(["disabled"])
+            else:
+                self.aud_conn_btn.state(["!disabled"])
+                self.aud_conn_btn.configure(text="Reconnect")
+                self.aud_disc_btn.state(["disabled"])
+                self.aud_port_cbo.state(["!disabled"])
+            if aw.has_new_block():
+                pre, post = aw.get_buffers()
+                tb = self.timebase_var.get()
+                traces = {"Pre-amp": (pre[:tb], T_PRE)}
+                if self.show_post_var.get() and post:
+                    traces["Post-amp"] = (post[:tb], T_POST)
+                self.raw_plot.set_traces(traces)
+
+                for slot in self.filter_slots:
+                    ftype = slot["type_var"].get()
+                    if ftype == "Off":
+                        slot["plot"].set_traces({})
+                        slot["fft_plot"].set_traces({})
+                        slot["state"] = None
+                        continue
+                    src = pre if slot["src_var"].get() == "Pre-amp" else post
+                    fc = slot["fc_var"].get()
+                    q = slot["q_var"].get()
+                    gain = slot["gain_var"].get()
+                    coeffs = biquad_coeffs(ftype, fc, max(q, 0.1),
+                                           AUDIO_SAMPLE_RATE, gain)
+                    if slot["state"] is None:
+                        _, warmup = apply_biquad(src, *coeffs, state=None)
+                        slot["state"] = warmup
+                    filtered, new_state = apply_biquad(
+                        src, *coeffs, state=slot["state"])
+                    slot["state"] = new_state
+                    mid_v = tb // 2
+                    src_v = src[:tb]
+                    combined_v = list(src[:mid_v]) + list(filtered[mid_v:tb])
+                    ann = [
+                        ("vline", mid_v, "filter on"),
+                        ("text", 0.02, 0.02,
+                         f"Fc={fc:.0f}Hz  Q={q:.2f}"
+                         + (f"  G={gain:+.1f}dB" if ftype in
+                            ("Peak", "Low Shelf", "High Shelf") else "")),
+                    ]
+                    slot["plot"].set_traces(
+                        {"Raw": (src_v, MUTED), "Output": (combined_v, T_FILT)},
+                        annotations=ann)
+
+                    freqs_r, db_r = compute_fft_db(src, AUDIO_SAMPLE_RATE)
+                    freqs_f, db_f = compute_fft_db(filtered, AUDIO_SAMPLE_RATE)
+                    fc_bin = min(range(len(freqs_r)),
+                                key=lambda i: abs(freqs_r[i] - fc))
+                    fft_ann = [("vline", fc_bin, f"Fc={fc:.0f}Hz")]
+                    slot["fft_plot"].set_traces(
+                        {"Raw": (db_r, MUTED), "Filtered": (db_f, T_FILT)},
+                        annotations=fft_ann)
+
         self.root.after(150, self._refresh)
 
     def _on_close(self):
-        busy = (self.worker and self.worker.is_alive()) or (self.iio and self.iio.is_alive())
+        busy = ((self.worker and self.worker.is_alive()) or
+                (self.iio and self.iio.is_alive()) or
+                (self.audio and self.audio.is_alive()))
         if busy:
             self.status_var.set("Stopping...")
             self.iio_status_var.set("Stopping...")
+            self.aud_status_var.set("Stopping...")
             self.root.update_idletasks()
         self._stop_motor_worker()
         self._stop_iio()
+        self._stop_audio()
         self.root.destroy()
 
 

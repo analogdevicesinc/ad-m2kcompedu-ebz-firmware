@@ -101,7 +101,7 @@ class MotorWorker(threading.Thread):
                 interface="slcan",
                 channel=self._port,
                 bitrate=500000,
-                ttyBaudrate=115200,
+                ttyBaudrate=921600,
             )
             node = net.add_node(self._node_id, self._eds)
             node.nmt.wait_for_heartbeat()

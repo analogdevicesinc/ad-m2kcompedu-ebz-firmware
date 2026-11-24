@@ -26,6 +26,9 @@
 #define PIN_SQW_SWITCH         6
 #define PIN_PWM                9
 
+#define PIN_AUDIO_PREAMP       A2
+#define PIN_AUDIO_POSTAMP      A3
+
 #define ADDR_DISPLAY      0x3C
 #define ADDR_AD5625R      0x1E
 
@@ -42,13 +45,14 @@ PwmOut  pwmOut(PIN_PWM);
 
 Controller controller(encoder, display,
                       waveformGen, amplitudeCtrl, dcOffsetCtrl, pwmOut,
-                      PIN_SQW_SWITCH, PIN_AD9833_SCK_CAN_RX);
+                      PIN_SQW_SWITCH, PIN_AD9833_SCK_CAN_RX,
+                      PIN_AUDIO_PREAMP, PIN_AUDIO_POSTAMP);
 
 unsigned long currentTimestamp;
 unsigned long lastTimestamp;
 
 void setup() {
-    Serial.begin(115200);
+    Serial.begin(921600);
 
     controller.init();
     ledMatrix.begin();

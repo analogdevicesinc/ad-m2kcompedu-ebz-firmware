@@ -19,6 +19,12 @@ enum class SpiCanBusOwner : uint8_t {
     SignalGen,
 };
 
+enum class SerialUser : uint8_t {
+    Iio,
+    Can,
+    Audio,
+};
+
 enum class CalType : uint8_t {
     Offset,
     SineAmp,
@@ -63,7 +69,7 @@ struct CanState {
 };
 
 constexpr uint32_t ADC_FULL_SCALE_MV = 5000;
-constexpr uint32_t ADC_MAX_COUNT     = 1023;
+constexpr uint32_t ADC_MAX_COUNT     = 16383;
 
 struct AppState {
     uint8_t  waveform     = 0;
@@ -85,7 +91,10 @@ struct AppState {
 
     uint16_t voltmeterRaw[2] = {0};
     uint16_t voltmeterMv[2]  = {0};
-    float voltmeterScale[2] = {0};
+    float voltmeterScale[2]  = {0};
+
+    int16_t  audioRaw[2]     = {0};
+    float    audioScale[2]   = {0};
 };
 
 class Messenger
@@ -99,6 +108,15 @@ class Messenger
 
         void setCanActive(bool active);
         bool canActive() const;
+
+        void setAudioActive(bool active);
+        bool audioActive() const;
+
+        void setAudioStreaming(bool s);
+        bool audioStreaming() const;
+
+        SerialUser serialUser() const;
+        bool       serialAvailable() const;
 
         void    requestCalibration(CalType type);
         bool    calibrationPending() const;
@@ -118,6 +136,9 @@ class Messenger
         AppState       appState;
         SpiCanBusOwner spiCanBusOwner = SpiCanBusOwner::Can;
         bool           canActiveFlag  = false;
+        bool           audioActiveFlag = false;
+        bool           audioStreamingFlag = false;
+        SerialUser     serialUserState = SerialUser::Iio;
 
         bool    calPending = false;
         CalType calType    = CalType::Offset;

@@ -50,13 +50,17 @@ static int find_param_index(const char* channel, const char* attr)
     return -1;
 }
 
-/* ADC input channels voltage0/voltage1 map to A2/A3 */
+/* ADC input channels: voltage0/1 = voltmeter, voltage2/3 = audio */
 static int adc_channel_index(const char* channel)
 {
     if (strcmp(channel, "voltage0") == 0)
         return 0;
     if (strcmp(channel, "voltage1") == 0)
         return 1;
+    if (strcmp(channel, "voltage2") == 0)
+        return 2;
+    if (strcmp(channel, "voltage3") == 0)
+        return 3;
 
     return -1;
 }
@@ -109,7 +113,7 @@ void IioAttrServer::init()
 
 void IioAttrServer::run()
 {
-    if (messenger.readSpiCanBusOwner() == SpiCanBusOwner::SignalGen)
+    if (messenger.serialUser() == SerialUser::Iio)
     {
         poll();
     }
@@ -160,10 +164,23 @@ int IioAttrServer::readAttr(const char* device, iiod_attr* attr, char* buf, uint
         if (ch < 0)
             return -EINVAL;
 
-        if (strcmp(attr->name, "raw") == 0)
-            return snprintf(buf, len, "%u", (unsigned)messenger.state().voltmeterRaw[ch]);
-        if (strcmp(attr->name, "scale") == 0)
-            return snprintf(buf, len, "%.6f", messenger.state().voltmeterScale[ch]);
+        if (ch <= 1)
+        {
+            if (strcmp(attr->name, "raw") == 0)
+                return snprintf(buf, len, "%u", (unsigned)messenger.state().voltmeterRaw[ch]);
+            if (strcmp(attr->name, "scale") == 0)
+                return snprintf(buf, len, "%.6f", messenger.state().voltmeterScale[ch]);
+        }
+        else
+        {
+            int ach = ch - 2;
+            if (strcmp(attr->name, "raw") == 0)
+                return snprintf(buf, len, "%d", (int)messenger.state().audioRaw[ach]);
+            if (strcmp(attr->name, "scale") == 0)
+                return snprintf(buf, len, "%.6f", messenger.state().audioScale[ach]);
+            if (strcmp(attr->name, "enable") == 0)
+                return snprintf(buf, len, "%d", messenger.audioActive() ? 1 : 0);
+        }
         return -EINVAL;
     }
 
@@ -194,6 +211,18 @@ int IioAttrServer::writeAttr(const char* device, iiod_attr* attr, char* buf, uin
 
     if (strcmp(device, IIO_DEVICE_NAME) != 0)
         return -ENODEV;
+
+    if (attr->type == IIO_ATTR_TYPE_CH_IN)
+    {
+        int ch = adc_channel_index(attr->channel);
+        if (ch >= 2 && strcmp(attr->name, "enable") == 0)
+        {
+            messenger.setAudioActive(atol(buf) != 0);
+            return (int)len;
+        }
+        return -EINVAL;
+    }
+
     if (attr->type != IIO_ATTR_TYPE_CH_OUT)
         return -EINVAL;
     if (!params)

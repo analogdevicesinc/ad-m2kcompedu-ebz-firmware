@@ -5,7 +5,7 @@
 
 Serial connection details:
     port:      /dev/ttyACM0
-    baudrate:  115200
+    baudrate:  921600
     settings:  8N1
 
 iio_info layout being targeted:
@@ -20,11 +20,11 @@ import sys
 import time
 
 # URI resolution order: CLI arg > IIO_URI env var > Linux default.
-# On Windows use e.g. "serial:COM4,115200,8n1".
+# On Windows use e.g. "serial:COM4,921600,8n1".
 URI = (
     sys.argv[1]
     if len(sys.argv) > 1
-    else os.environ.get("IIO_URI", "serial:/dev/ttyACM0,115200,8n1")
+    else os.environ.get("IIO_URI", "serial:/dev/ttyACM0,921600,8n1")
 )
 DEVICE_NAME = "m2kcompedu-ebz"
 

@@ -28,7 +28,7 @@ store = sp.add_parser('store', help='Persist TMC9660 RWE parameters')
 args = parser.parse_args()
 
 net = canopen.Network()
-net.connect(interface='slcan', channel=args.iface, bitrate=500000, ttyBaudrate=115200)
+net.connect(interface='slcan', channel=args.iface, bitrate=500000, ttyBaudrate=921600)
 
 node = net.add_node(args.node, args.eds)
 

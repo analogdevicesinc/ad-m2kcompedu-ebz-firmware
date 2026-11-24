@@ -42,6 +42,16 @@ static const char context_xml[] =
     "<attribute name=\"raw\" filename=\"in_voltage1_raw\"/>"
     "<attribute name=\"scale\" filename=\"in_voltage1_scale\"/>"
     "</channel>"
+    "<channel id=\"voltage2\" type=\"input\">"
+    "<attribute name=\"raw\" filename=\"in_voltage2_raw\"/>"
+    "<attribute name=\"scale\" filename=\"in_voltage2_scale\"/>"
+    "<attribute name=\"enable\" filename=\"in_voltage2_enable\"/>"
+    "</channel>"
+    "<channel id=\"voltage3\" type=\"input\">"
+    "<attribute name=\"raw\" filename=\"in_voltage3_raw\"/>"
+    "<attribute name=\"scale\" filename=\"in_voltage3_scale\"/>"
+    "<attribute name=\"enable\" filename=\"in_voltage3_enable\"/>"
+    "</channel>"
     "</device>"
     "</context>";
 

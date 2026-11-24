@@ -43,7 +43,7 @@ void BusArbiter::init()
 
 void BusArbiter::run()
 {
-    if (messenger.canActive())
+    if (messenger.canState().open)
     {
         return;
     }

@@ -56,16 +56,21 @@ void CanMessenger::run()
 {
     bool canOwns = (messenger.readSpiCanBusOwner() == SpiCanBusOwner::Can);
 
-    if (canOwns && !_active)
+    if (canOwns)
     {
-        start();
+        if (!_active)
+        {
+            start();
+        }
+        messenger.setCanActive(true);
     }
-    else if (!canOwns && _active)
+    else if (_active)
     {
         stop();
+        messenger.setCanActive(false);
     }
 
-    if (_active)
+    if (_active && messenger.serialUser() == SerialUser::Can)
     {
         if (_canInit)
         {
@@ -251,6 +256,11 @@ bool CanMessenger::openChannel()
 
 void CanMessenger::closeChannel()
 {
+    if (_canInit)
+    {
+        CAN.end();
+        _canInit = false;
+    }
     _open = false;
 }
 

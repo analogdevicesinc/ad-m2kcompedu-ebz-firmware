@@ -56,11 +56,12 @@ static constexpr MenuNode mainItems[] = {
     { "Signal Gen",    siggenItems, 4, 0 },
     { "PWM Gen",       pwmItems,    3, 0 },
     { "Calibrate",     calItems,    3, 0 },
+    { "Audio Monitor", nullptr,     0, P_AUDIO },
     { "CAN Messenger", nullptr,     0, P_CAN_MSG },
     { "Voltmeter",     vmeterItems, 2, 0, true },
 };
 
-static constexpr MenuNode root = { "Main", mainItems, 5, 0 };
+static constexpr MenuNode root = { "Main", mainItems, 6, 0 };
 
 static int32_t readParam(const Param& p)
 {
@@ -206,7 +207,7 @@ static void adjustFreqOrder(float& freq, uint8_t& order, int8_t dir, float minHz
 Menu::Menu(Encoder& encoder, Display& display, Messenger& messenger)
     : encoder(encoder), display(display), messenger(messenger), params{},
       current(&root), cursor(0), editing(false), subCursor(0),
-      viewingCan(false), scrollTop(0), depth(0),
+      viewingCan(false), scrollTop(0), viewingAudio(false), depth(0),
       buf{}, lastBuf{}, popupText(nullptr), popupUntil(0), lastDraw(0)
 {
 }
@@ -230,6 +231,7 @@ void Menu::init()
     params[P_CAL_OFF]       = { nullptr,         0,    0,   0, false, nullptr, nullptr,    0, true,  false };
     params[P_CAL_SINE]      = { nullptr,         0,    0,   0, false, nullptr, nullptr,    0, true,  false };
     params[P_CAL_SQW]       = { nullptr,         0,    0,   0, false, nullptr, nullptr,    0, true,  false };
+    params[P_AUDIO]         = { nullptr,         0,    0,   0, false, nullptr, nullptr,    0, true,  false };
     params[P_CAN_MSG]       = { nullptr,         0,    0,   0, false, nullptr, nullptr,    0, true,  false };
     params[P_VOLTMETER_CH1] = { &s.voltmeterMv[0],     0,    5000,   0, false, "V", nullptr, 0, false,  false };
     params[P_VOLTMETER_CH2] = { &s.voltmeterMv[1],     0,    5000,   0, false, "V", nullptr, 0, false,  false };
@@ -298,6 +300,17 @@ void Menu::handleEvent(Event ev)
         return;
     }
 
+    if (viewingAudio)
+    {
+        if (ev == Event::LongPress)
+        {
+            viewingAudio = false;
+            messenger.setAudioActive(false);
+            messenger.setAudioStreaming(false);
+        }
+        return;
+    }
+
     if (ev != Event::None)
     {
         process(ev);
@@ -322,6 +335,12 @@ void Menu::buildScreen()
     if (viewingCan)
     {
         buildCan(messenger.canState());
+        return;
+    }
+
+    if (viewingAudio)
+    {
+        buildAudio();
         return;
     }
 
@@ -660,6 +679,18 @@ void Menu::process(Event ev)
                             }
                             messenger.requestCalibration(type);
                         }
+                        else if (pIdx == P_AUDIO)
+                        {
+                            if (messenger.readSpiCanBusOwner() == SpiCanBusOwner::Can)
+                            {
+                                showPopup(CEN "CAN active" CEN_E "\n\n"
+                                          CEN "Remove jumpers" CEN_E, 2);
+                                return;
+                            }
+                            viewingAudio = true;
+                            messenger.setAudioActive(true);
+                            messenger.setAudioStreaming(true);
+                        }
                         else if (pIdx == P_CAN_MSG)
                         {
                             viewingCan = true;
@@ -919,4 +950,11 @@ void Menu::buildMenu()
     }
 
     buf[pos] = '\0';
+}
+
+void Menu::buildAudio()
+{
+    sprintf(buf, CEN "Audio Monitor" CEN_E "\n\n"
+                 CEN "Streaming..." CEN_E "\n"
+                 CEN "long-press: exit" CEN_E);
 }

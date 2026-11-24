@@ -31,12 +31,69 @@ SpiCanBusOwner Messenger::readSpiCanBusOwner() const
 
 void Messenger::setCanActive(bool active)
 {
-    canActiveFlag = active;
+    if (active)
+    {
+        if (spiCanBusOwner != SpiCanBusOwner::Can)
+            return;
+        if (serialUserState == SerialUser::Audio)
+            return;
+        canActiveFlag = true;
+        serialUserState = SerialUser::Can;
+    }
+    else
+    {
+        canActiveFlag = false;
+        if (serialUserState == SerialUser::Can)
+            serialUserState = audioStreamingFlag ? SerialUser::Audio
+                                                 : SerialUser::Iio;
+    }
 }
 
 bool Messenger::canActive() const
 {
     return canActiveFlag;
+}
+
+void Messenger::setAudioActive(bool active)
+{
+    audioActiveFlag = active;
+}
+
+bool Messenger::audioActive() const
+{
+    return audioActiveFlag;
+}
+
+void Messenger::setAudioStreaming(bool s)
+{
+    if (s)
+    {
+        if (serialUserState == SerialUser::Can)
+            return;
+        audioStreamingFlag = true;
+        serialUserState = SerialUser::Audio;
+    }
+    else
+    {
+        audioStreamingFlag = false;
+        if (serialUserState == SerialUser::Audio)
+            serialUserState = SerialUser::Iio;
+    }
+}
+
+bool Messenger::audioStreaming() const
+{
+    return audioStreamingFlag;
+}
+
+SerialUser Messenger::serialUser() const
+{
+    return serialUserState;
+}
+
+bool Messenger::serialAvailable() const
+{
+    return serialUserState != SerialUser::Can;
 }
 
 void Messenger::requestCalibration(CalType type)

@@ -147,6 +147,7 @@ void Peripherals::beginAdc()
     for (uint8_t i = 0; i < 2; i++)
     {
         state.voltmeterScale[i] = (float)ADC_FULL_SCALE_MV / (float)ADC_MAX_COUNT;
+        state.audioScale[i] = 0.001f;
     }
 }
 
@@ -259,6 +260,11 @@ void Peripherals::updateDcOffset(const AppState& state)
 
 void Peripherals::updateAdc()
 {
+    if (messenger.audioActive())
+    {
+        return;
+    }
+
     uint32_t now = millis();
     if (now - lastAdcMs < ADC_PERIOD_MS)
     {

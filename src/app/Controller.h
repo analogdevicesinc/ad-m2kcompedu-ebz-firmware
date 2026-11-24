@@ -20,6 +20,7 @@
 #include "Peripherals.h"
 #include "CanMessenger.h"
 #include "IioAttrServer.h"
+#include "Audio.h"
 
 class Controller
 {
@@ -27,7 +28,8 @@ class Controller
         Controller(Encoder& encoder, Display& display,
                    AD9833& waveformGen, AD5443& amplitudeCtrl,
                    AD5625R& dcOffsetCtrl, PwmOut& pwmOut,
-                   uint8_t sqwSwitchPin, uint8_t canRxPin);
+                   uint8_t sqwSwitchPin, uint8_t canRxPin,
+                   uint8_t audioPreAmpPin, uint8_t audioPostAmpPin);
         void init();
         void tick();
 
@@ -39,6 +41,7 @@ class Controller
         Peripherals       peripherals;
         CanMessenger      canMessenger;
         IioAttrServer     iio;
+        Audio             audio;
 };
 
 #endif

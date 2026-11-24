@@ -32,18 +32,50 @@ Make sure that your board has the firmware uploaded, if not see Building and Fla
     ![Generate Wave](doc/usage/pwn_gen_tp.png)   
     ![WaveWave](doc/usage/pwn_wave.png)
 
+## Audio Capture
+
+Pins A2 (pre-amp) and A3 (post-amp) are sampled at 8 kHz by a timer ISR using ping-pong double buffering. The raw samples are streamed over serial as binary frames so the Python demo can plot them in real time.
+
+Audio streaming, IIO and CAN/SLCAN all share the same serial port, so only one can be active at a time — the firmware's bus arbiter handles the switching.
+
+### Streaming with the Python demo
+
+1. On the OLED, navigate to **Audio Monitor** and press the encoder — this starts the capture and streams binary frames over serial
+2. Launch `python demos/ebz_demo.py`, open the **Audio Amplifier** tab, pick the COM port and hit **Connect**
+3. You should see the pre-amp (and post-amp) waveforms updating live
+4. The filter section lets you apply biquad filters (low-pass, high-pass, band-pass, etc.) and view the FFT
+5. Long-press the encoder on the board to stop streaming and exit Audio Monitor
+
+Binary frame format: `0xAA 0x55 <channels:1> <preAmp:256×int16> [postAmp:256×int16]`
+
+### Reading audio levels via IIO
+
+Once you exit Audio Monitor (long-press), serial switches back to IIO and you can query the last captured levels:
+
+```
+iio_attr -u serial:/dev/ttyACM0,921600,8n1 -c m2kcompedu-ebz -i voltage2 raw
+```
+
+You can also start/stop capture remotely without the OLED menu:
+
+```
+iio_attr -u serial:/dev/ttyACM0,921600,8n1 -c m2kcompedu-ebz -i voltage2 enable 1
+```
+
 ## Controlling the board remotely
 
-The firmware runs an IIOD server over the UART (accessible through the USB port of the Uno R4), so the board can also be controlled remotely with any [libiio](https://github.com/analogdevicesinc/libiio) client instead of the rotary encoder/menu. Connect using the serial backend, at 57600 baud:
+The firmware runs an IIOD server over the UART (accessible through the USB port of the Uno R4), so the board can also be controlled remotely with any [libiio](https://github.com/analogdevicesinc/libiio) client instead of the rotary encoder/menu. Connect using the serial backend, at 921600 baud:
 
 ```
-iio_info -u serial:/dev/ttyACM0,57600
+iio_info -u serial:/dev/ttyACM0,921600,8n1
 ```
 
-This exposes a single IIO device, `m2kcompedu-ebz`, with two output channels:
+This exposes a single IIO device, `m2kcompedu-ebz`, with output and input channels:
 
 - `altvoltage0` : the signal generator: `wavetype`, `amplitude`, `offset`, `frequency`
 - `altvoltage1` : the PWM generator: `enable`, `duty_cycle`, `frequency`
+- `voltage0`, `voltage1` : voltmeter inputs (A2, A3): `raw`, `scale`
+- `voltage2`, `voltage3` : audio capture inputs (A2, A3): `raw`, `scale`, `enable`
 
 `wavetype` selects the signal generator's waveform and is an index into `OFF (0)`, `DC (1)`, `Sine (2)`, `Square (3)`, `Triangle (4)` e.g. the `wavetype value: 2` in the sample below means the generator is producing a sine wave.
 
@@ -69,7 +101,7 @@ IIO context has 1 devices:
 Each attribute can be read or written directly with `iio_attr`, e.g. to set the signal generator frequency to 2 kHz:
 
 ```
-iio_attr -u serial:/dev/ttyACM0,57600 -c m2kcompedu-ebz altvoltage0 frequency 2000
+iio_attr -u serial:/dev/ttyACM0,921600,8n1 -c m2kcompedu-ebz altvoltage0 frequency 2000
 ```
 
 
@@ -130,7 +162,7 @@ arduino-cli upload --profile unor4wifi --port <port> AD-M2KCOMPEDU-EBZ-firmware.
 Replace `<port>` with the serial port (e.g. `COM3` or `/dev/ttyUSB0`).
 
 
-UART is configured at **57600 baud** for debug output.
+UART is configured at **921600 baud**.
 
 ## Flashing the Board
 
@@ -194,10 +226,12 @@ The firmware is an Arduino sketch following a **Model-View-Controller** pattern:
 AD-M2KCOMPEDU-EBZ-firmware.ino                   Entry point (setup + 1ms loop)
 src/
   app/
-    Controler.cpp/.h        FSM controller, menu tree, state management
+    Controller.cpp/.h       FSM controller, menu tree, state management
     Menu.cpp/.h             Menu rendering with custom markup formatting
     Peripherals.cpp/.h      Hardware abstraction, refreshFlags-based updates
     CalibrationWizard.cpp/.h  Multi-step interactive calibration
+    Audio.cpp/.h            Two-channel ADC capture with ping-pong ISR buffering
+    Messenger.cpp/.h        Shared state and flags between app modules
   drivers/
     AD5443.cpp/.h           SPI driver for amplitude MDAC
     AD5625R.cpp/.h          I2C driver for DC offset quad-DAC
@@ -280,6 +314,7 @@ Main
  |     |-- PWM Out:    ON / OFF
  |     |-- Frequency:  value + order
  |     |-- Duty Cycle: 0 - 100%
+ |-- Audio Monitor          (live signal level on OLED, long-press to exit)
  |-- Calibrate
        |-- Calibrate Offset   (multi-step wizard)
        |-- Calibrate Sine Amp (2 steps: 1 Vpp and 10 Vpp)

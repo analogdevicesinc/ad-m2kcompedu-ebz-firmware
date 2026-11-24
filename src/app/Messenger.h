@@ -89,10 +89,6 @@ struct AppState {
     int16_t  calSqw1V     = 0;
     int16_t  calSqw10V    = 0;
 
-    uint16_t voltmeterRaw[2] = {0};
-    uint16_t voltmeterMv[2]  = {0};
-    float voltmeterScale[2]  = {0};
-
     int16_t  audioRaw[2]     = {0};
     float    audioScale[2]   = {0};
 };

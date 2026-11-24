@@ -13,7 +13,7 @@ Audio* Audio::instance = nullptr;
 
 Audio::Audio(uint8_t preAmpPin, uint8_t postAmpPin, Messenger& messenger)
     : messenger(messenger), pinPre(preAmpPin), pinPost(postAmpPin), dualChannel(true),
-      isrIdx(0), fill(0), ready(false) {
+      isrIdx(0), fill(0), ready(false), timerReady(false), running(false) {
     instance = this;
 }
 
@@ -29,39 +29,47 @@ void Audio::init() {
     AppState& s = messenger.state();
     s.audioRaw[0] = 0;
     s.audioRaw[1] = 0;
-}
+    s.audioScale[0] = 0.001f;
+    s.audioScale[1] = 0.001f;
 
-void Audio::start() {
-    isrIdx = 0;
-    fill = 0;
-    ready = false;
-
+    // Allocate timer once during startup, then only enable and disable when requested
     uint8_t timerType = GPT_TIMER;
     int8_t channel = FspTimer::get_available_timer(timerType);
     if (channel < 0) return;
 
     sampleTimer.begin(TIMER_MODE_PERIODIC, timerType, channel,
                       (float)AUDIO_SAMPLE_RATE, 0.0f, timerCallback);
-    sampleTimer.setup_overflow_irq();
+    sampleTimer.setup_overflow_irq(13);
     sampleTimer.open();
+    timerReady = true;
+}
+
+void Audio::start() {
+    if (!timerReady) return;
+
+    isrIdx = 0;
+    fill = 0;
+    ready = false;
+
     sampleTimer.start();
+    running = true;
 }
 
 void Audio::stop() {
     sampleTimer.stop();
-    sampleTimer.close();
+    running = false;
 }
 
 void Audio::run() {
     bool wantActive = messenger.audioActive()
         && messenger.serialAvailable();
 
-    if (wantActive && !sampleTimer.is_opened())
+    if (wantActive && !running)
         start();
-    else if (!wantActive && sampleTimer.is_opened())
+    else if (!wantActive && running)
         stop();
 
-    if (!sampleTimer.is_opened() || !ready)
+    if (!running || !ready)
         return;
 
     __DMB();

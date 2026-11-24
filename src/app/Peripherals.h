@@ -37,17 +37,14 @@ class Peripherals
         Messenger& messenger;
         AppState  applied;
         SpiCanBusOwner lastOwner;
-        uint32_t  lastAdcMs;
 
         void beginSignalGen();
         void beginPwm();
-        void beginAdc();
 
         void updateWave(const AppState& state);
         void updateFrequency(const AppState& state);
         void updateAmplitude(const AppState& state);
         void updateDcOffset(const AppState& state);
-        void updateAdc();
         void applyPwm(const AppState& state);
 };
 

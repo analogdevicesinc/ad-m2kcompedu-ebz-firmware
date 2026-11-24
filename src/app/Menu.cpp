@@ -207,7 +207,7 @@ static void adjustFreqOrder(float& freq, uint8_t& order, int8_t dir, float minHz
 Menu::Menu(Encoder& encoder, Display& display, Messenger& messenger)
     : encoder(encoder), display(display), messenger(messenger), params{},
       current(&root), cursor(0), editing(false), subCursor(0),
-      viewingCan(false), scrollTop(0), viewingAudio(false), depth(0),
+      viewingCan(false), scrollTop(0), viewingAudio(false), voltmeterAudio(false), depth(0),
       buf{}, lastBuf{}, popupText(nullptr), popupUntil(0), lastDraw(0)
 {
 }
@@ -233,8 +233,8 @@ void Menu::init()
     params[P_CAL_SQW]       = { nullptr,         0,    0,   0, false, nullptr, nullptr,    0, true,  false };
     params[P_AUDIO]         = { nullptr,         0,    0,   0, false, nullptr, nullptr,    0, true,  false };
     params[P_CAN_MSG]       = { nullptr,         0,    0,   0, false, nullptr, nullptr,    0, true,  false };
-    params[P_VOLTMETER_CH1] = { &s.voltmeterMv[0],     0,    5000,   0, false, "V", nullptr, 0, false,  false };
-    params[P_VOLTMETER_CH2] = { &s.voltmeterMv[1],     0,    5000,   0, false, "V", nullptr, 0, false,  false };
+    params[P_VOLTMETER_CH1] = { &s.audioRaw[0],  0,    5000,   0, false, "V", nullptr, 0, false,  false };
+    params[P_VOLTMETER_CH2] = { &s.audioRaw[1],  0,    5000,   0, false, "V", nullptr, 0, false,  false };
     buildScreen();
     draw();
     lastDraw = millis();
@@ -246,6 +246,7 @@ void Menu::run()
     Event ev = encoder.poll();
 
     handleEvent(ev);
+    updateVoltmeterAudio();
 
     uint32_t now = millis();
     if (ev != Event::None || now - lastDraw >= DRAW_INTERVAL_MS)
@@ -253,6 +254,28 @@ void Menu::run()
         lastDraw = now;
         buildScreen();
         draw();
+    }
+}
+
+/*
+ * The UI voltmeter reads the audio input average value.
+ * This function starts audio sampling when the voltmeter UI
+ * is enabled and stops it only if the voltmeter UI was the one
+ * who started it.
+ */
+void Menu::updateVoltmeterAudio()
+{
+    bool inVoltmeter = (current->children == vmeterItems);
+
+    if (inVoltmeter && !voltmeterAudio && !messenger.audioActive())
+    {
+        messenger.setAudioActive(true);
+        voltmeterAudio = true;
+    }
+    else if (!inVoltmeter && voltmeterAudio)
+    {
+        messenger.setAudioActive(false);
+        voltmeterAudio = false;
     }
 }
 
@@ -751,19 +774,24 @@ void Menu::formatValue(char* out, uint8_t& pos, const Param& p, uint8_t pIdx)
     }
     else if (pIdx == P_AMPL || pIdx == P_DC)
     {
-        int32_t whole = val / 1000;
         int32_t absVal = val;
         if (val < 0)
         {
             absVal = -val;
         }
+        int32_t whole = absVal / 1000;
         int32_t frac = absVal % 1000 / 100;
+        const char* sign = "";
+        if (val < 0)
+        {
+            sign = "-";
+        }
         const char* unit = "";
         if (p.unit)
         {
             unit = p.unit;
         }
-        pos += sprintf(&out[pos], "%ld.%ld%s", (long)whole, (long)frac, unit);
+        pos += sprintf(&out[pos], "%s%ld.%ld%s", sign, (long)whole, (long)frac, unit);
     }
     else if (pIdx == P_VOLTMETER_CH1 || pIdx == P_VOLTMETER_CH2)
     {

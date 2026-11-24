@@ -66,6 +66,7 @@ class Menu
 
     private:
         void handleEvent(Event ev);
+        void updateVoltmeterAudio();
         void process(Event ev);
         void adjust(int8_t dir);
         void buildScreen();
@@ -92,6 +93,7 @@ class Menu
         bool    viewingCan;
         uint8_t scrollTop;
         bool    viewingAudio;
+        bool    voltmeterAudio;
 
         const MenuNode* parentStack[4];
         uint8_t cursorStack[4];

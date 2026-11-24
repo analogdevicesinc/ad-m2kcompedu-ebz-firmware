@@ -38,6 +38,8 @@ private:
     volatile uint16_t isrIdx;
     volatile uint8_t fill;
     volatile bool ready;
+    bool timerReady;
+    bool running;
 
     FspTimer sampleTimer;
 
